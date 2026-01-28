@@ -1,0 +1,92 @@
+server:
+  port: 8086
+
+base-url:
+  context: /axonect/aee/templates/v1.0/base-template
+app:
+  host: /MICROSERVICE_NAME/
+
+log:
+  identifierKey: UUID
+  isDebug: true
+info:
+  app:
+    name :  base-template
+    msName : base-template
+com:
+  adl:
+    dte:
+      plugins:
+        logging:
+          enabled: true
+          level: DEBUG
+        rolling:
+          policy: size
+          size: 100000kb
+        alarming:
+          enabled: true
+        msstat:
+          enabled: true
+
+logging:
+  level:
+    com.axonect: DEBUG
+
+springdoc:
+  packagesToScan: com.axonect.aee.template.baseapp.application.controller
+  pathsToMatch: /**
+  swagger-ui:
+    configUrl: /MICROSERVICE_NAME/v3/api-docs/swagger-config
+    url: /MICROSERVICE_NAME/v3/api-docs
+    disable-swagger-default-url: true
+  api-docs:
+    path: /v3/api-docs
+
+spring:
+  datasource:
+    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
+    username: aaa
+    password: Aaa!89nky78D
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 600000      # 10 minutes: close idle connections
+      connection-timeout: 30000 # 30 seconds to get a connection
+      max-lifetime: 1800000     # 30 minutes: max life of a connection
+      validation-timeout: 5000  # 5 seconds to validate connection
+      initialization-fail-timeout: 0 # Prevent app from failing if DB not ready
+      pool-name: OraclePool
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.OracleDialect
+
+recurrent-service.chunk-size: 5
+delete-expired-buckets.chunk-size: 5
+
+# Cache API Configuration
+cache.api.connect-timeout: 5000         # Connection timeout in milliseconds
+cache.api.read-timeout: 10              # Read timeout in seconds
+cache.api.write-timeout: 10             # Write timeout in seconds
+cache.api.response-timeout: 10          # Response timeout in seconds
+cache.api.max-connections: 100          # Maximum connections in pool
+cache.api.pending-acquire-timeout: 45   # Timeout for acquiring connection from pool (seconds)
+
+########### Base Urls ###################
+ams.base-url: http://aeb53274042be477aba79f9076056316-ee9e05124271e8a5.elb.ap-southeast-2.amazonaws.com/airtel-aaa-accounting-management-service/api/v1/cache
+
+###########  Cache API URLS ###################
+cache.api.base-url: ${ams.base-url}/addBucket/{bucketUsername}
+
+# Request Timeout
+cache.api.timeout.request: 10         # Individual request timeout in seconds
+
+# Retry Configuration
+cache.api.retry.max-attempts: 3       # Maximum retry attempts
+cache.api.initial-backoff: 2          # Initial backoff in seconds
+cache.api.max-backoff: 10             # Maximum backoff in seconds
