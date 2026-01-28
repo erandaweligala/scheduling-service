@@ -56,7 +56,7 @@ public class RecurrentServiceService {
 
     //todo need to implement first get services this filters apply
     // ( NEXT_CYCLE_START_DATE = Tommorow and RECURRING_FLAG = 1 and not expired service EXPIRY_DATE   ) need get batch process
-    // need to ignore   userNamePage = userRepository.findUserNamesByStatus(UserStatus.ACTIVE, pageable); this part
+    // need to remove this part   userNamePage = userRepository.findUserNamesByStatus(UserStatus.ACTIVE, pageable); this part need to get services related usernames
     // scenario is get servics and batch process related servis status
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
