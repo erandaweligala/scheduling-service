@@ -54,7 +54,6 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    //todo need to implement first get services this filters apply ( NEXT_CYCLE_START_DATE = Tommorow and RECURRING_FLAG = 1 and not expired service EXPIRY_DATE   ) need get batch process
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
 
@@ -73,10 +72,13 @@ public class RecurrentServiceService {
                     .plusDays(1)
                     .atStartOfDay(); // 00:00:00
 
+            LocalDateTime now = LocalDateTime.now(ZoneId.of(Constants.SL_TIME_ZONE));
+
                 List<ServiceInstance> services = serviceInstanceRepository
-                        .findByUsernameInAndRecurringFlagTrueAndNextCycleStartDate(
+                        .findByUsernameInAndRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
                                 userNames,
-                                tomorrowStart
+                                tomorrowStart,
+                                now
                         );
 
                 for (ServiceInstance serviceInstance : services) {

@@ -13,4 +13,7 @@ public interface ServiceInstanceRepository extends JpaRepository<ServiceInstance
 
     List<ServiceInstance> findByUsernameInAndRecurringFlagTrueAndNextCycleStartDate(
             List<String> usernames, LocalDateTime nextCycleStartDate);
+
+    List<ServiceInstance> findByUsernameInAndRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
+            List<String> usernames, LocalDateTime nextCycleStartDate, LocalDateTime expiryDate);
 }
