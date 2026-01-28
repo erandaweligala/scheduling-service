@@ -54,6 +54,7 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
+    //todo need to implement first get services this filters apply ( NEXT_CYCLE_START_DATE = Tommorow and RECURRING_FLAG = 1 and not expired service EXPIRY_DATE   ) need get batch process
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
 
