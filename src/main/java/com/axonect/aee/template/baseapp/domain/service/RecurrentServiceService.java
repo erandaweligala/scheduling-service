@@ -63,6 +63,9 @@ public class RecurrentServiceService {
     private final UserCacheService userCacheService;
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
+    // Self-injection to enable transactional method calls via proxy
+    private final RecurrentServiceService self;
+
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
@@ -137,7 +140,7 @@ public class RecurrentServiceService {
                     log.warn("User not found for service ID: {}, username: {}",
                             serviceInstance.getId(), serviceInstance.getUsername());
                     failureCount++;
-                    saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+                    self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
                             new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
                     continue;
                 }
@@ -146,7 +149,7 @@ public class RecurrentServiceService {
                 if (plan == null) {
                     log.error("Plan not found: {}", serviceInstance.getPlanId());
                     failureCount++;
-                    saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+                    self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
                             new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
                     continue;
                 }
@@ -170,7 +173,7 @@ public class RecurrentServiceService {
                             serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
 
                     // Save failure details to database for tracking and retry
-                    saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
+                    self.saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
 
                     // Continue processing other services even if this one fails
                 }
