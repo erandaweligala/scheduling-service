@@ -27,6 +27,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -59,7 +60,6 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    @Transactional(timeout = 3600)  // 1 hour timeout for large batch processing
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
 
@@ -71,6 +71,9 @@ public class RecurrentServiceService {
                 .plusDays(1)
                 .atStartOfDay();
         LocalDateTime tomorrowEnd = tomorrowStart.plusDays(1);
+
+        int successCount = 0;
+        int failureCount = 0;
 
         do {
             servicePage = serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
@@ -119,46 +122,88 @@ public class RecurrentServiceService {
             Map<Long, QOSProfile> qosProfileMap = qosProfileRepository.findByIdIn(qosIds).stream()
                     .collect(Collectors.toMap(QOSProfile::getId, q -> q));
 
-            // Process each service with pre-loaded data
-            List<ServiceInstance> servicesToUpdate = new ArrayList<>();
-
+            // Process each service in its own transaction
             for (ServiceInstance serviceInstance : services) {
                 UserEntity user = userMap.get(serviceInstance.getUsername());
                 if (user == null) {
                     log.warn("User not found for service ID: {}, username: {}",
                             serviceInstance.getId(), serviceInstance.getUsername());
+                    failureCount++;
                     continue;
                 }
 
                 Plan plan = planMap.get(serviceInstance.getPlanId());
                 if (plan == null) {
                     log.error("Plan not found: {}", serviceInstance.getPlanId());
+                    failureCount++;
                     continue;
                 }
 
-                log.info("Updating service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
-                updateCycleManagementProperties(serviceInstance, plan, user);
-                servicesToUpdate.add(serviceInstance);
-            }
-
-            // BATCH SAVE: Save all updated service instances at once
-            serviceInstanceRepository.saveAll(servicesToUpdate);
-            log.info("Saved {} updated service instances", servicesToUpdate.size());
-
-            // Process quotas for each service with pre-loaded data
-            for (ServiceInstance serviceInstance : servicesToUpdate) {
-                Plan plan = planMap.get(serviceInstance.getPlanId());
-                List<BucketInstance> bucketInstanceList = bucketInstanceMap.get(serviceInstance.getId());
-                List<PlanToBucket> quotaDetails = planToBucketMap.get(plan.getPlanId());
-
-                provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
+                try {
+                    // Each service is processed in its own independent transaction
+                    processServiceInstanceInTransaction(
+                            serviceInstance,
+                            user,
+                            plan,
+                            bucketInstanceMap.get(serviceInstance.getId()),
+                            planToBucketMap.get(plan.getPlanId()),
+                            bucketMap,
+                            qosProfileMap
+                    );
+                    successCount++;
+                    log.info("Successfully processed service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
+                } catch (Exception ex) {
+                    failureCount++;
+                    log.error("Failed to process service ID: {} for user: {}. Error: {}",
+                            serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
+                    // Continue processing other services even if this one fails
+                }
             }
 
             pageNumber++;
             pageable = PageRequest.of(pageNumber, chunkSize);
 
         } while (!servicePage.isLast());
-        log.info("Reactivate expired recurrent services Completed..");
+
+        log.info("Reactivate expired recurrent services Completed. Success: {}, Failures: {}",
+                successCount, failureCount);
+    }
+
+    /**
+     * Processes a single service instance in its own transaction.
+     * Each service gets an independent transaction that can commit or rollback without affecting others.
+     *
+     * @param serviceInstance The service instance to process
+     * @param user The user entity
+     * @param plan The plan entity
+     * @param bucketInstanceList List of bucket instances for this service
+     * @param quotaDetails Quota details from plan
+     * @param bucketMap Map of bucket IDs to bucket entities
+     * @param qosProfileMap Map of QoS profile IDs to QoS profiles
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = 3600)
+    public void processServiceInstanceInTransaction(
+            ServiceInstance serviceInstance,
+            UserEntity user,
+            Plan plan,
+            List<BucketInstance> bucketInstanceList,
+            List<PlanToBucket> quotaDetails,
+            Map<String, Bucket> bucketMap,
+            Map<Long, QOSProfile> qosProfileMap) {
+
+        log.debug("Processing service instance ID: {} in new transaction", serviceInstance.getId());
+
+        // Update cycle management properties
+        updateCycleManagementProperties(serviceInstance, plan, user);
+
+        // Save the updated service instance
+        serviceInstanceRepository.save(serviceInstance);
+        log.debug("Saved service instance ID: {}", serviceInstance.getId());
+
+        // Provision quotas
+        provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
+
+        log.debug("Completed processing service instance ID: {} in transaction", serviceInstance.getId());
     }
 
     private void updateCycleManagementProperties(ServiceInstance serviceInstance, Plan plan, UserEntity user){

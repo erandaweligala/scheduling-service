@@ -244,17 +244,31 @@ delete-expired-buckets.chunk-size: 100
 ### 5. Transaction Management
 
 ```java
-@Transactional(timeout = 3600)  // 1 hour timeout for large batches
+// Main batch processing method - no transaction
 public void reactivateExpiredRecurrentServices() {
-    // Batch processing with explicit transaction boundaries
-    // Prevents connection leaks and long-running transactions
+    // Process each service in its own transaction
+    for (ServiceInstance service : services) {
+        try {
+            processServiceInstanceInTransaction(...);
+        } catch (Exception ex) {
+            // Log and continue - other services can still succeed
+        }
+    }
+}
+
+// Individual service processing with isolated transaction
+@Transactional(propagation = Propagation.REQUIRES_NEW, timeout = 3600)
+public void processServiceInstanceInTransaction(...) {
+    // Each service gets its own independent transaction
+    // If this fails, only this service rolls back
 }
 ```
 
 **Benefits**:
-- Prevents timeout on large batches
-- Explicit transaction boundaries
-- Better error handling
+- Independent transactions per service using REQUIRES_NEW propagation
+- Failed services rollback individually without affecting others
+- Better fault tolerance - batch processing continues even if some services fail
+- Success/failure tracking for monitoring
 
 ---
 
