@@ -1,0 +1,26 @@
+package com.axonect.aee.template.baseapp.domain.entities.dto;
+
+import lombok.*;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * User session data stored in Redis cache
+ */
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder(toBuilder = true)
+public class UserSessionData {
+    private String sessionTimeOut;
+    private String userStatus; // if bard user consume with global plan
+    private String userName;
+    private String groupId;
+    private long concurrency;
+    private long superTemplateId; // ex: 1,3,5
+    private List<Balance> balance = new ArrayList<>();
+    private List<Session> sessions = new ArrayList<>();
+    private QosParam qosParam;
+}
