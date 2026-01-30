@@ -54,7 +54,7 @@ public class RecurrentServiceService {
     private final BucketRepository bucketRepository;
     private final QOSProfileRepository qosProfileRepository;
     private final BucketInstanceRepository bucketInstanceRepository;
-    private final AccountingCacheManagementService accountingCacheManagementService;
+
 
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
@@ -357,8 +357,8 @@ public class RecurrentServiceService {
             bucketInstanceRepository.saveAll(bucketInstanceList);
             log.info("Saved {} bucket instances for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
-            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
-                    ,bucketInstanceList);
+//            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
+//                    ,bucketInstanceList);
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -384,8 +384,6 @@ public class RecurrentServiceService {
             bucketInstanceRepository.saveAll(bucketInstanceList);
             log.info("Saved {} bucket instances for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
-            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(), serviceInstance.getStatus(),
-                    bucketInstanceList);
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -580,8 +578,6 @@ public class RecurrentServiceService {
                             }
                             bucketInstanceRepository.save(currentCFBucketListForId);
 
-                            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
-                                    , Collections.singletonList(currentCFBucketListForId));
                         }
 
                         newCarryForwardBucketList.add(bucketInstance);
@@ -598,8 +594,8 @@ public class RecurrentServiceService {
             log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
-            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
-                    ,newCarryForwardBucketList);
+//            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
+//                    ,newCarryForwardBucketList);
 
         } catch (AAAException ex) {
             throw ex;
@@ -690,13 +686,7 @@ public class RecurrentServiceService {
             log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
-            // Sync to cache
-            if (!updatesToSave.isEmpty()) {
-                accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(), serviceInstance.getStatus(), updatesToSave);
-            }
-            if (!newCarryForwardBucketList.isEmpty()) {
-                accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(), serviceInstance.getStatus(), newCarryForwardBucketList);
-            }
+
 
         } catch (AAAException ex) {
             throw ex;

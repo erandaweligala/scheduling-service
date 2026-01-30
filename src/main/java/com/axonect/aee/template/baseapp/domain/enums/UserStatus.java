@@ -2,7 +2,7 @@ package com.axonect.aee.template.baseapp.domain.enums;
 
 public enum UserStatus {
     ACTIVE(1),
-    SUSPENDED(2),
+    BARRED(2),
     INACTIVE(3);
 
 
