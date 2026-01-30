@@ -144,6 +144,12 @@ public class AccountingCacheManagementService {
                                 new RuntimeException("Expected HTTP 200 but got " + response.getStatusCode()));
                     }
                 })
+                .onErrorMap(throwable -> {
+                    log.error("Error syncing bucketId: {} for user: {}. Error: {}",
+                            bucket.getBucketId(), bucketUsername, throwable.getMessage());
+                    return new RuntimeException("Failed to sync bucket " + bucket.getBucketId() +
+                            " for user " + bucketUsername + ": " + throwable.getMessage(), throwable);
+                })
                 .block(); // Block and wait for completion
     }
 
