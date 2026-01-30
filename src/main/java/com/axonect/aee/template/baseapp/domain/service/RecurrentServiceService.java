@@ -14,6 +14,8 @@ import com.axonect.aee.template.baseapp.domain.entities.repo.PlanToBucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.QOSProfile;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.UserEntity;
+import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
+import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.enums.UserStatus;
 import com.axonect.aee.template.baseapp.domain.exception.AAAException;
 import com.axonect.aee.template.baseapp.domain.util.Constants;
@@ -55,8 +57,8 @@ public class RecurrentServiceService {
     private final BucketRepository bucketRepository;
     private final QOSProfileRepository qosProfileRepository;
     private final BucketInstanceRepository bucketInstanceRepository;
+    private final UserCacheService userCacheService;
 
-    //todo need to implemant getUserData using username and get  userSessionData.balance list and added all bucketList new created and save updateUserAndRelatedCaches
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
@@ -375,6 +377,9 @@ public class RecurrentServiceService {
             bucketInstanceRepository.saveAll(bucketInstanceList);
             log.info("Saved {} bucket instances for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
+
+            // Update user cache with newly created bucket instances
+            updateUserCacheWithBuckets(serviceInstance.getUsername(), bucketInstanceList, serviceInstance);
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -677,7 +682,10 @@ public class RecurrentServiceService {
             log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
-
+            // Update user cache with newly created carry-forward bucket instances
+            if (!newCarryForwardBucketList.isEmpty()) {
+                updateUserCacheWithBuckets(serviceInstance.getUsername(), newCarryForwardBucketList, serviceInstance);
+            }
 
         } catch (AAAException ex) {
             throw ex;
@@ -700,6 +708,104 @@ public class RecurrentServiceService {
         log.info("Deleted {}  expired buckets for Service Instance ID: {}", bucketInstanceList.size(), serviceId);
     }
 
+    /**
+     * Updates user cache with newly created bucket instances
+     * Converts BucketInstances to Balance objects and updates Redis cache via UserCacheService
+     *
+     * @param username Username to update cache for
+     * @param newBucketInstances List of newly created bucket instances to add to cache
+     * @param serviceInstance ServiceInstance for getting service details
+     */
+    private void updateUserCacheWithBuckets(String username, List<BucketInstance> newBucketInstances,
+                                            ServiceInstance serviceInstance) {
+        log.debug("Updating user cache with {} new bucket instances for username: {}",
+                newBucketInstances.size(), username);
 
+        try {
+            // Get user entity to retrieve userId
+            UserEntity user = userRepository.findAllByUserName(username);
+            if (user == null) {
+                log.error("User not found for username: {}", username);
+                throw new AAAException(LogMessages.ERROR_NOT_FOUND,
+                        "USER_NOT_FOUND: " + username, HttpStatus.NOT_FOUND);
+            }
+
+            // Get existing user session data from Redis cache
+            UserSessionData userSessionData = userCacheService.getUserData(user.getUserId());
+
+            if (userSessionData == null) {
+                log.warn("No user session data found in cache for userId: {}, username: {}. Skipping cache update.",
+                        user.getUserId(), username);
+                return;
+            }
+
+            // Convert BucketInstances to Balance objects
+            List<Balance> newBalances = convertBucketInstancesToBalances(newBucketInstances, serviceInstance);
+
+            // Add new balances to existing balance list
+            if (userSessionData.getBalance() == null) {
+                userSessionData.setBalance(new ArrayList<>());
+            }
+            userSessionData.getBalance().addAll(newBalances);
+
+            log.debug("Added {} balance entries to user session data for username: {}",
+                    newBalances.size(), username);
+
+            // Update Redis cache with updated user session data
+            userCacheService.updateUserAndRelatedCaches(user.getUserId(), userSessionData, username);
+
+            log.info("Successfully updated cache for username: {} with {} new bucket instances",
+                    username, newBucketInstances.size());
+
+        } catch (AAAException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Error updating user cache for username: {}", username, ex);
+            throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR,
+                    "Failed to update user cache: " + ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /**
+     * Converts BucketInstance entities to Balance DTOs
+     *
+     * @param bucketInstances List of BucketInstance entities
+     * @param serviceInstance ServiceInstance for getting service details
+     * @return List of Balance DTOs
+     */
+    private List<Balance> convertBucketInstancesToBalances(List<BucketInstance> bucketInstances,
+                                                           ServiceInstance serviceInstance) {
+        List<Balance> balances = new ArrayList<>();
+
+        for (BucketInstance bucketInstance : bucketInstances) {
+            Balance balance = new Balance();
+
+            // Set balance properties from bucket instance
+            balance.setInitialBalance(bucketInstance.getInitialBalance());
+            balance.setQuota(bucketInstance.getCurrentBalance());
+            balance.setServiceExpiry(serviceInstance.getExpiryDate());
+            balance.setBucketExpiryDate(bucketInstance.getExpiration());
+            balance.setBucketId(bucketInstance.getBucketId());
+            balance.setServiceId(bucketInstance.getServiceId() != null ?
+                    bucketInstance.getServiceId().toString() : null);
+            balance.setPriority(bucketInstance.getPriority());
+            balance.setServiceStartDate(serviceInstance.getServiceStartDate());
+            balance.setServiceStatus(serviceInstance.getStatus());
+            balance.setTimeWindow(bucketInstance.getTimeWindow());
+            balance.setConsumptionLimit(bucketInstance.getConsumptionLimit());
+            balance.setConsumptionLimitWindow(bucketInstance.getConsumptionLimitWindow());
+            balance.setBucketUsername(serviceInstance.getUsername());
+            balance.setUnlimited(false); // Default to false, update if needed based on business logic
+            balance.setGroup(Boolean.TRUE.equals(serviceInstance.getIsGroup()));
+            balance.setUsage(bucketInstance.getUsage() != null ? bucketInstance.getUsage() : 0L);
+
+            balances.add(balance);
+
+            log.trace("Converted BucketInstance to Balance - BucketId: {}, Quota: {}, Priority: {}",
+                    bucketInstance.getBucketId(), bucketInstance.getCurrentBalance(), bucketInstance.getPriority());
+        }
+
+        return balances;
+    }
 
 }
