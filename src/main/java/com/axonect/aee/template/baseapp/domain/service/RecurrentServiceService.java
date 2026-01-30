@@ -276,31 +276,6 @@ public class RecurrentServiceService {
         }
     }
 
-    private void newQuotaProvision(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance) {
-        log.debug("Starting new quota provision for Service Instance ID: {}, Quota count: {}",
-                serviceInstance.getId(), quotaDetails.size());
-
-        try {
-            List<BucketInstance> bucketInstanceList = new ArrayList<>();
-            for (PlanToBucket planToBucket : quotaDetails) {
-                BucketInstance bucketInstance = new BucketInstance();
-                setBucketDetails(planToBucket.getBucketId(), bucketInstance, serviceInstance, planToBucket,
-                        Boolean.FALSE, null);
-                log.debug("Bucket provisioned - Bucket ID: {}, Initial quota: {}",
-                        planToBucket.getBucketId(), planToBucket.getInitialQuota());
-                bucketInstanceList.add(bucketInstance);
-            }
-            bucketInstanceRepository.saveAll(bucketInstanceList);
-            log.info("Saved {} bucket instances for Service Instance ID: {}",
-                    bucketInstanceList.size(), serviceInstance.getId());
-        } catch (AAAException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Error during direct quota provision for Service Instance ID: {}",
-                    serviceInstance.getId(), ex);
-            throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-    }
 
     private void newQuotaProvisionOptimized(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance,
                                             Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
@@ -330,58 +305,8 @@ public class RecurrentServiceService {
         }
     }
 
-    private void setBucketDetails(String bucketId, BucketInstance bucketInstance, ServiceInstance serviceInstance,
-                                  PlanToBucket planToBucket, boolean isCFBucket, Long currentBalance) {
-        log.debug("Setting bucket details for Bucket ID: {}, Service Instance ID: {}", bucketId, serviceInstance.getId());
-        try {
-            Bucket bucket = bucketRepository.findByBucketId(bucketId)
-                    .orElseThrow(() -> {
-                        log.error("Bucket not found: {}", bucketId);
-                        return new AAAException(LogMessages.ERROR_POLICY_CONFLICT, "BUCKET_NOT_FOUND " + bucketId
-                                , HttpStatus.NOT_FOUND);
-                    });
 
-            log.debug("Bucket found - Type: {}, Priority: {}, QoS ID: {}", bucket.getBucketType(), bucket.getPriority()
-                    , bucket.getQosId());
-
-            bucketInstance.setBucketId(bucket.getBucketId());
-            bucketInstance.setBucketType(bucket.getBucketType());
-            bucketInstance.setPriority(bucket.getPriority());
-            bucketInstance.setTimeWindow(bucket.getTimeWindow());
-            bucketInstance.setRule(getBNGCodeByRuleId(bucket.getQosId()));
-            bucketInstance.setServiceId(serviceInstance.getId());
-            bucketInstance.setCarryForward(planToBucket.getCarryForward());
-            bucketInstance.setMaxCarryForward(planToBucket.getMaxCarryForward());
-            bucketInstance.setTotalCarryForward(planToBucket.getTotalCarryForward());
-            bucketInstance.setConsumptionLimit(planToBucket.getConsumptionLimit());
-            bucketInstance.setConsumptionLimitWindow(planToBucket.getConsumptionLimitWindow());
-            bucketInstance.setCurrentBalance(planToBucket.getInitialQuota());
-            bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
-            bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
-            bucketInstance.setExpiration(serviceInstance.getServiceCycleEndDate());
-            bucketInstance.setUsage(0L);
-
-            if (isCFBucket && currentBalance != null){
-                bucketInstance.setBucketType(Constants.CARRY_FORWARD_BUCKET);
-                bucketInstance.setCarryForward(Boolean.FALSE);
-                if (currentBalance > planToBucket.getMaxCarryForward())
-                    currentBalance = planToBucket.getMaxCarryForward();
-                bucketInstance.setCurrentBalance(currentBalance);
-                bucketInstance.setInitialBalance(currentBalance);
-                bucketInstance.setExpiration(serviceInstance.getServiceStartDate()
-                        .plusDays(planToBucket.getCarryForwardValidity()));
-            }
-
-            log.debug("Bucket details set successfully for Bucket ID: {}, Initial quota: {}",
-                    bucketId, planToBucket.getInitialQuota());
-        } catch (AAAException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Error setting bucket details for Bucket ID: {}", bucketId, ex);
-            throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-    }
-
+    @SuppressWarnings("java:S107")
     private void setBucketDetailsOptimized(String bucketId, BucketInstance bucketInstance, ServiceInstance serviceInstance,
                                            PlanToBucket planToBucket, boolean isCFBucket, Long currentBalance,
                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
@@ -433,31 +358,6 @@ public class RecurrentServiceService {
         }
     }
 
-    private String getBNGCodeByRuleId(Long qosId) {
-        log.debug("Fetching BNG code for QoS ID: {}", qosId);
-        try {
-            QOSProfile qosProfile = qosProfileRepository.findById(qosId)
-                    .orElseThrow(() -> {
-                        log.error("QoS profile not found: {}", qosId);
-                        return new AAAException(
-                                LogMessages.ERROR_POLICY_CONFLICT,
-                                "QOS_PROFILE_NOT_FOUND " + qosId,
-                                HttpStatus.NOT_FOUND
-                        );
-                    });
-            log.debug("BNG code retrieved: {} for QoS ID: {}", qosProfile.getBngCode(), qosId);
-            return qosProfile.getBngCode();
-        } catch (AAAException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Error fetching BNG code for QoS ID: {}", qosId, ex);
-            throw new AAAException(
-                    LogMessages.ERROR_INTERNAL_ERROR,
-                    ex.getMessage(),
-                   HttpStatus.INTERNAL_SERVER_ERROR
-            );
-        }
-    }
 
     /**
      * Builds a map of existing carry forward buckets grouped by bucket ID
@@ -647,18 +547,6 @@ public class RecurrentServiceService {
         }
     }
 
-    private void deleteExpiredBucketInstance(List<BucketInstance> bucketInstanceList, Long serviceId){
-        log.debug("Starting delete expired buckets for Service Instance ID: {}", serviceId);
-
-        LocalDate tomorrow  = LocalDate.now(ZoneId.of("Asia/Colombo")).plusDays(1);
-
-        List<BucketInstance> expiringTomorrowList = bucketInstanceList.stream()
-                .filter(b -> b.getExpiration() != null &&
-                        b.getExpiration().toLocalDate().isEqual(tomorrow ))
-                .toList();
-        bucketInstanceRepository.deleteAll(expiringTomorrowList);
-        log.info("Deleted {}  expired buckets for Service Instance ID: {}", bucketInstanceList.size(), serviceId);
-    }
 
     /**
      * Updates user cache with newly created bucket instances
