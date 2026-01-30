@@ -1,0 +1,172 @@
+# =========================================================
+# JVM Configuration for Scheduling Service
+# =========================================================
+# OPTIMIZED FOR 5M service_instance + 10M bucket_instance
+#
+# These JVM arguments should be added to your application startup:
+# - Docker: Add to JAVA_OPTS environment variable
+# - Kubernetes: Add to container args or env
+# - Standalone: Add to java -jar command
+# =========================================================
+
+# =========================================================
+# 1. HEAP MEMORY SETTINGS
+# =========================================================
+# Increase heap size to handle large batch processing
+# Recommended: 4GB minimum, 8GB for production with high volume
+
+-Xms2g                    # Initial heap size: 2GB
+-Xmx4g                    # Maximum heap size: 4GB
+-XX:MetaspaceSize=256m    # Initial metaspace size
+-XX:MaxMetaspaceSize=512m # Maximum metaspace size
+
+# For very high volume (if you have enough RAM):
+# -Xms4g
+# -Xmx8g
+
+# =========================================================
+# 2. GARBAGE COLLECTION (G1GC - Recommended)
+# =========================================================
+# G1GC is optimal for large heaps and batch processing
+
+-XX:+UseG1GC              # Use G1 garbage collector
+-XX:MaxGCPauseMillis=200  # Target max GC pause time: 200ms
+-XX:G1HeapRegionSize=16m  # G1 region size
+-XX:InitiatingHeapOccupancyPercent=45  # Start concurrent GC at 45% heap
+-XX:G1ReservePercent=10   # Reserve 10% of heap for to-space
+-XX:ParallelGCThreads=4   # Parallel GC threads (adjust based on CPU cores)
+-XX:ConcGCThreads=2       # Concurrent GC threads
+
+# =========================================================
+# 3. ALTERNATIVE: ZGC for Very Low Latency (Java 17+)
+# =========================================================
+# Uncomment these and comment out G1GC settings if you need
+# ultra-low latency (<10ms GC pauses) and have Java 17+
+
+# -XX:+UseZGC
+# -XX:ZCollectionInterval=10
+# -XX:SoftMaxHeapSize=3g
+
+# =========================================================
+# 4. MEMORY OPTIMIZATION FLAGS
+# =========================================================
+
+-XX:+AlwaysPreTouch       # Pre-touch all heap pages at startup (reduces latency)
+-XX:+UseStringDeduplication  # Reduce memory for duplicate strings
+-XX:+OptimizeStringConcat # Optimize string concatenation
+
+# Aggressive heap optimization
+-XX:+UseCompressedOops    # Use compressed pointers (enabled by default <32GB heap)
+-XX:+UseCompressedClassPointers
+
+# =========================================================
+# 5. PERFORMANCE FLAGS
+# =========================================================
+
+-XX:+TieredCompilation    # Enable tiered compilation for faster startup
+-XX:TieredStopAtLevel=1   # Comment this out for production (used for faster startup in dev)
+-XX:+AggressiveOpts       # Enable aggressive optimizations
+
+# =========================================================
+# 6. MONITORING AND DIAGNOSTICS
+# =========================================================
+
+# GC Logging (for monitoring and tuning)
+-Xlog:gc*:file=logs/gc.log:time,uptime,level,tags:filecount=5,filesize=100M
+
+# Heap dump on OutOfMemoryError
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/heapdump.hprof
+
+# JMX for monitoring (adjust port as needed)
+-Dcom.sun.management.jmxremote
+-Dcom.sun.management.jmxremote.port=9010
+-Dcom.sun.management.jmxremote.authenticate=false
+-Dcom.sun.management.jmxremote.ssl=false
+
+# =========================================================
+# 7. APPLICATION-SPECIFIC SETTINGS
+# =========================================================
+
+# Increase network buffer sizes for database operations
+-Djava.net.preferIPv4Stack=true
+
+# File encoding
+-Dfile.encoding=UTF-8
+
+# =========================================================
+# COMPLETE COMMAND EXAMPLE
+# =========================================================
+
+# Development (2GB heap):
+# java -Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
+#      -Xlog:gc*:file=logs/gc.log:time,uptime:filecount=5,filesize=100M \
+#      -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=logs/heapdump.hprof \
+#      -jar scheduling-service.jar
+
+# Production (8GB heap):
+# java -Xms4g -Xmx8g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
+#      -XX:G1HeapRegionSize=16m -XX:InitiatingHeapOccupancyPercent=45 \
+#      -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4 \
+#      -XX:+AlwaysPreTouch -XX:+UseStringDeduplication \
+#      -Xlog:gc*:file=logs/gc.log:time,uptime,level,tags:filecount=5,filesize=100M \
+#      -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=logs/heapdump.hprof \
+#      -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=9010 \
+#      -Dcom.sun.management.jmxremote.authenticate=false \
+#      -Dcom.sun.management.jmxremote.ssl=false \
+#      -jar scheduling-service.jar
+
+# =========================================================
+# DOCKER EXAMPLE
+# =========================================================
+
+# In Dockerfile:
+# ENV JAVA_OPTS="-Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xlog:gc*:file=/logs/gc.log:time,uptime:filecount=5,filesize=100M"
+# ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/scheduling-service.jar"]
+
+# =========================================================
+# KUBERNETES EXAMPLE
+# =========================================================
+
+# In deployment.yaml:
+# env:
+#   - name: JAVA_OPTS
+#     value: "-Xms4g -Xmx8g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+# resources:
+#   requests:
+#     memory: "4Gi"
+#     cpu: "2"
+#   limits:
+#     memory: "10Gi"  # Leave headroom for native memory
+#     cpu: "4"
+
+# =========================================================
+# MONITORING RECOMMENDATIONS
+# =========================================================
+
+# 1. Monitor GC logs regularly:
+#    tail -f logs/gc.log
+#
+# 2. Check heap usage with JConsole/VisualVM
+#    Connect to localhost:9010
+#
+# 3. Analyze heap dumps if OOM occurs:
+#    jhat logs/heapdump.hprof
+#    or use Eclipse MAT (Memory Analyzer Tool)
+#
+# 4. Monitor key metrics:
+#    - GC pause times (should be < 200ms)
+#    - Heap usage (should stay below 80%)
+#    - Full GC frequency (should be rare)
+#    - Young GC frequency (normal to see often)
+
+# =========================================================
+# TUNING GUIDELINES
+# =========================================================
+
+# If you see:
+# - Frequent Full GCs → Increase heap size (-Xmx)
+# - Long GC pauses → Adjust -XX:MaxGCPauseMillis or switch to ZGC
+# - OutOfMemoryError → Increase heap or optimize code
+# - High CPU during GC → Reduce -XX:ParallelGCThreads
+# - Slow startup → Remove -XX:TieredStopAtLevel=1 in production

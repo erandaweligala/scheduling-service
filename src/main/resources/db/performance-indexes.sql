@@ -75,6 +75,22 @@ CREATE INDEX IF NOT EXISTS idx_plan_recurring_flag
 ON PLAN(RECURRING_FLAG);
 
 -- =========================================================
+-- Additional Performance Indexes for 5M+ / 10M+ Records
+-- =========================================================
+
+-- Composite index for service filtering and joining
+CREATE INDEX IF NOT EXISTS idx_service_status_recurring
+ON SERVICE_INSTANCE(STATUS, RECURRING_FLAG);
+
+-- Index for bucket balance queries (carry forward calculations)
+CREATE INDEX IF NOT EXISTS idx_bucket_balance
+ON BUCKET_INSTANCE(CURRENT_BALANCE, BUCKET_TYPE);
+
+-- Composite index for service-plan lookups
+CREATE INDEX IF NOT EXISTS idx_service_plan_status
+ON SERVICE_INSTANCE(PLAN_ID, STATUS);
+
+-- =========================================================
 -- Statistics Update (Oracle specific)
 -- =========================================================
 -- After creating indexes, update table statistics for optimal query planning
@@ -85,3 +101,54 @@ ON PLAN(RECURRING_FLAG);
 -- EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'AAA', tabname => 'PLAN_TO_BUCKET');
 -- EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'AAA', tabname => 'USER_ENTITY');
 -- EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'AAA', tabname => 'PLAN');
+
+-- =========================================================
+-- Advanced Oracle Performance Tuning
+-- =========================================================
+-- These should be executed by DBA for optimal performance with 5M+ records
+
+-- 1. Enable parallel query execution for large table scans
+-- ALTER TABLE SERVICE_INSTANCE PARALLEL 4;
+-- ALTER TABLE BUCKET_INSTANCE PARALLEL 4;
+
+-- 2. Compute extended statistics for correlated columns
+-- EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'AAA', tabname => 'SERVICE_INSTANCE', method_opt => 'FOR ALL COLUMNS SIZE AUTO');
+-- EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'AAA', tabname => 'BUCKET_INSTANCE', method_opt => 'FOR ALL COLUMNS SIZE AUTO');
+
+-- 3. Set optimizer mode for better performance
+-- ALTER SESSION SET optimizer_mode = FIRST_ROWS_100;
+
+-- 4. Consider table partitioning for very large datasets (10M+ records)
+-- Partition BUCKET_INSTANCE by SERVICE_ID range or by EXPIRATION date
+-- Example (commented out - requires DBA and careful planning):
+-- CREATE TABLE BUCKET_INSTANCE_PARTITIONED (
+--     ... all columns ...
+-- ) PARTITION BY RANGE (EXPIRATION) (
+--     PARTITION p_2024 VALUES LESS THAN (TO_DATE('2025-01-01', 'YYYY-MM-DD')),
+--     PARTITION p_2025 VALUES LESS THAN (TO_DATE('2026-01-01', 'YYYY-MM-DD')),
+--     PARTITION p_future VALUES LESS THAN (MAXVALUE)
+-- );
+
+-- 5. Monitor index usage and fragmentation
+-- SELECT index_name, tablespace_name, blevel, leaf_blocks, num_rows
+-- FROM user_indexes
+-- WHERE table_name IN ('SERVICE_INSTANCE', 'BUCKET_INSTANCE')
+-- ORDER BY table_name, index_name;
+
+-- 6. Rebuild indexes if fragmented (run periodically)
+-- ALTER INDEX idx_service_recurring_next_expiry REBUILD ONLINE;
+-- ALTER INDEX idx_bucket_instance_service_id REBUILD ONLINE;
+
+-- =========================================================
+-- Query Execution Plan Analysis
+-- =========================================================
+-- Use these to verify index usage:
+
+-- EXPLAIN PLAN FOR
+-- SELECT * FROM SERVICE_INSTANCE
+-- WHERE RECURRING_FLAG = 1
+--   AND NEXT_CYCLE_START_DATE >= SYSDATE
+--   AND NEXT_CYCLE_START_DATE < SYSDATE + 1
+--   AND EXPIRY_DATE > SYSDATE;
+
+-- SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);

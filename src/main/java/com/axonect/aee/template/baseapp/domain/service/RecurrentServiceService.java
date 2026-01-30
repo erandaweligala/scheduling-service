@@ -26,6 +26,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -67,7 +68,14 @@ public class RecurrentServiceService {
      * - RECURRING_FLAG = true
      * - EXPIRY_DATE is in the future (not expired)
      * Processes services in chunks for better performance.
+     *
+     * PERFORMANCE OPTIMIZATIONS FOR 5M+ RECORDS:
+     * - Uses pagination to process in chunks (configurable via chunk-size)
+     * - Batch loading to eliminate N+1 queries
+     * - Explicit transaction management with timeout
+     * - Read operations optimized with proper fetch strategies
      */
+    @Transactional(timeout = 3600)  // 1 hour timeout for large batch processing
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
 
