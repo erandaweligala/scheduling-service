@@ -133,16 +133,14 @@ public class AccountingCacheManagementService {
                                 log.warn("Retrying bucketId: {} for user: {}, attempt: {}/{}",
                                         bucket.getBucketId(), bucketUsername,
                                         signal.totalRetries() + 1, maxRetryAttempts)))
-                .flatMap(response -> {
-                    if (response.getStatusCode().equals(HttpStatus.OK)) {
-                        log.debug("Received HTTP 200 for bucketId: {}", bucket.getBucketId());
-                        return reactor.core.publisher.Mono.empty();
-                    } else {
-                        log.error("Non-200 status for bucketId: {}. Status: {}",
-                                bucket.getBucketId(), response.getStatusCode());
-                        return reactor.core.publisher.Mono.error(
-                                new RuntimeException("Expected HTTP 200 but got " + response.getStatusCode()));
-                    }
+                .doOnSuccess(response ->
+                        log.debug("Successfully synced bucketId: {} with status: {}",
+                                bucket.getBucketId(), response.getStatusCode()))
+                .onErrorMap(throwable -> {
+                    String errorMsg = String.format("Failed to sync bucket %s for user %s: %s",
+                            bucket.getBucketId(), bucketUsername, throwable.getMessage());
+                    log.error(errorMsg, throwable);
+                    return new RuntimeException(errorMsg, throwable);
                 })
                 .block(); // Block and wait for completion
     }
