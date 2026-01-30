@@ -11,12 +11,15 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
@@ -40,8 +43,11 @@ public class AccountingCacheManagementService {
     @Value("${cache.api.retry.max-backoff:10}")
     private int maxBackoffSeconds;
 
-    // Sync buckets to cache - processes buckets sequentially
-    public void syncBuckets(String bucketUsername,String serviceStatus, List<BucketInstance> bucketInstances) {
+    @Value("${cache.api.parallel.concurrency:10}")
+    private int parallelConcurrency;
+
+    // Sync buckets to cache - processes buckets in parallel for optimal performance
+    public void syncBuckets(String bucketUsername, String serviceStatus, List<BucketInstance> bucketInstances) {
 
         if (!StringUtils.hasText(bucketUsername)) {
             throw new IllegalArgumentException("Bucket username cannot be null or empty");
@@ -52,36 +58,36 @@ public class AccountingCacheManagementService {
             return;
         }
 
-        log.info("Starting sync for user: {}, bucket count: {}", bucketUsername, bucketInstances.size());
+        log.info("Starting parallel sync for user: {}, bucket count: {}, concurrency: {}",
+                bucketUsername, bucketInstances.size(), parallelConcurrency);
 
         long startTime = System.currentTimeMillis();
+        AtomicInteger successCount = new AtomicInteger(0);
         List<String> failedBucketIds = new ArrayList<>();
-        int successCount = 0;
 
-        // Process buckets one by one
-        for (int i = 0; i < bucketInstances.size(); i++) {
-            BucketInstance bucket = bucketInstances.get(i);
-
-            log.info("Processing bucket {}/{} - bucketId: {} for user: {}",
-                    i + 1, bucketInstances.size(), bucket.getBucketId(), bucketUsername);
-
-            try {
-                processBucket(bucketUsername,serviceStatus, bucket);
-                successCount++;
-                log.info("Successfully synced bucket {}/{} - bucketId: {}",
-                        i + 1, bucketInstances.size(), bucket.getBucketId());
-            } catch (Exception e) {
-                log.error("Failed to sync bucket {}/{} - bucketId: {}",
-                        i + 1, bucketInstances.size(), bucket.getBucketId(), e);
-                failedBucketIds.add(bucket.getBucketId());
-            }
-        }
+        // Process buckets in parallel with concurrency control
+        List<String> errors = Flux.fromIterable(bucketInstances)
+                .flatMap(bucket -> processBucketAsync(bucketUsername, serviceStatus, bucket)
+                        .doOnSuccess(v -> {
+                            successCount.incrementAndGet();
+                            log.debug("Successfully synced bucketId: {}", bucket.getBucketId());
+                        })
+                        .onErrorResume(e -> {
+                            log.error("Failed to sync bucketId: {}", bucket.getBucketId(), e);
+                            synchronized (failedBucketIds) {
+                                failedBucketIds.add(bucket.getBucketId());
+                            }
+                            return Mono.just(bucket.getBucketId());
+                        }),
+                        parallelConcurrency)
+                .collectList()
+                .block();
 
         long duration = System.currentTimeMillis() - startTime;
         int failedCount = failedBucketIds.size();
 
-        log.info("Batch sync completed for user: {}. Success: {}, Failed: {}, Total: {}, Duration: {}ms",
-                bucketUsername, successCount, failedCount, bucketInstances.size(), duration);
+        log.info("Parallel batch sync completed for user: {}. Success: {}, Failed: {}, Total: {}, Duration: {}ms",
+                bucketUsername, successCount.get(), failedCount, bucketInstances.size(), duration);
 
         // Throw exception if any bucket failed
         if (!failedBucketIds.isEmpty()) {
@@ -94,31 +100,32 @@ public class AccountingCacheManagementService {
             throw new CacheBucketException(errorMessage, bucketUsername, null);
         }
 
-        log.info("All buckets synced successfully for user: {} in {}ms", bucketUsername, duration);
+        log.info("All buckets synced successfully for user: {} in {}ms (avg: {}ms per bucket)",
+                bucketUsername, duration, duration / bucketInstances.size());
     }
 
-    // Process single bucket
-    private void processBucket(String bucketUsername, String serviceStatus, BucketInstance bucket) {
+    // Process single bucket - async version for parallel processing
+    private Mono<Void> processBucketAsync(String bucketUsername, String serviceStatus, BucketInstance bucket) {
 
         // Validate bucket
         if (bucket == null) {
-            throw new IllegalArgumentException("Bucket instance is null");
+            return Mono.error(new IllegalArgumentException("Bucket instance is null"));
         }
 
         if (!StringUtils.hasText(bucket.getBucketId())) {
-            throw new IllegalArgumentException("Bucket ID is null or empty");
+            return Mono.error(new IllegalArgumentException("Bucket ID is null or empty"));
         }
 
         // Build request
-        CacheBucketRequest request = buildRequest(bucket, bucketUsername,serviceStatus);
+        CacheBucketRequest request = buildRequest(bucket, bucketUsername, serviceStatus);
 
         // Build URL
         String fullUrl = cacheApiUrl.replace("{bucketUsername}", bucketUsername);
 
         log.debug("Making PATCH request to: {}", fullUrl);
 
-        // Make API call and wait for response
-        cacheApiWebClient
+        // Make async API call without blocking
+        return cacheApiWebClient
                 .patch()
                 .uri(fullUrl)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -136,15 +143,14 @@ public class AccountingCacheManagementService {
                 .flatMap(response -> {
                     if (response.getStatusCode().equals(HttpStatus.OK)) {
                         log.debug("Received HTTP 200 for bucketId: {}", bucket.getBucketId());
-                        return reactor.core.publisher.Mono.empty();
+                        return Mono.empty();
                     } else {
                         log.error("Non-200 status for bucketId: {}. Status: {}",
                                 bucket.getBucketId(), response.getStatusCode());
-                        return reactor.core.publisher.Mono.error(
+                        return Mono.error(
                                 new RuntimeException("Expected HTTP 200 but got " + response.getStatusCode()));
                     }
-                })
-                .block(); // Block and wait for completion
+                });
     }
 
     private CacheBucketRequest buildRequest(BucketInstance instance, String bucketUsername, String serviceStatus) {

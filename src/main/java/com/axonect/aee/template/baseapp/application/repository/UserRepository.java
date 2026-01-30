@@ -8,6 +8,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
+import java.util.Set;
+
 public interface UserRepository extends JpaRepository<UserEntity, String> {
 
     Page<UserEntity> findAllByStatus(String status, Pageable pageable);
@@ -16,4 +19,6 @@ public interface UserRepository extends JpaRepository<UserEntity, String> {
     Page<String> findUserNamesByStatus(@Param("status") UserStatus status, Pageable pageable);
 
     UserEntity findAllByUserName(String userName);
+
+    List<UserEntity> findByUserNameIn(Set<String> userNames);
 }

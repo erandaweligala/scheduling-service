@@ -67,8 +67,8 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.OracleDialect
 
-recurrent-service.chunk-size: 5
-delete-expired-buckets.chunk-size: 5
+recurrent-service.chunk-size: 100
+delete-expired-buckets.chunk-size: 100
 
 # Cache API Configuration
 cache.api.connect-timeout: 5000         # Connection timeout in milliseconds
@@ -90,5 +90,8 @@ cache.api.timeout.request: 10         # Individual request timeout in seconds
 
 # Retry Configuration
 cache.api.retry.max-attempts: 3       # Maximum retry attempts
-cache.api.initial-backoff: 2          # Initial backoff in seconds
-cache.api.max-backoff: 10             # Maximum backoff in seconds
+cache.api.retry.initial-backoff: 2    # Initial backoff in seconds
+cache.api.retry.max-backoff: 10       # Maximum backoff in seconds
+
+# Parallel Processing Configuration
+cache.api.parallel.concurrency: 10    # Number of concurrent API requests
