@@ -71,13 +71,15 @@ public class RecurrentServiceService {
 
         LocalDateTime tomorrowStart = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE))
                 .plusDays(1)
-                .atStartOfDay(); // todo my SERVICE_INSTANCE table NEXT_CYCLE_START_DATE = '2026-01-31 11:16:28.966' store in this format need not retrive data from this value
+                .atStartOfDay();
+        LocalDateTime tomorrowEnd = tomorrowStart.plusDays(1);
 
 
         do {
-            // Get services directly with filters: RECURRING_FLAG = 1, NEXT_CYCLE_START_DATE = Tomorrow, not expired
+            // Get services directly with filters: RECURRING_FLAG = 1, NEXT_CYCLE_START_DATE = Tomorrow (date only), not expired
             servicePage = serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
                     tomorrowStart,
+                    tomorrowEnd,
                     tomorrowStart,
                     pageable
             );
