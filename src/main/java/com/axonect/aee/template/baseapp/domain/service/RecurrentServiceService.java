@@ -6,6 +6,7 @@ import com.axonect.aee.template.baseapp.application.repository.PlanRepository;
 import com.axonect.aee.template.baseapp.application.repository.PlanToBucketRepository;
 import com.axonect.aee.template.baseapp.application.repository.QOSProfileRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
+import com.axonect.aee.template.baseapp.application.repository.ServiceProcessingFailureRepository;
 import com.axonect.aee.template.baseapp.application.repository.UserRepository;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Bucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
@@ -13,6 +14,7 @@ import com.axonect.aee.template.baseapp.domain.entities.repo.Plan;
 import com.axonect.aee.template.baseapp.domain.entities.repo.PlanToBucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.QOSProfile;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
+import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceProcessingFailure;
 import com.axonect.aee.template.baseapp.domain.entities.repo.UserEntity;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
@@ -30,6 +32,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -41,6 +45,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -56,12 +61,15 @@ public class RecurrentServiceService {
     private final QOSProfileRepository qosProfileRepository;
     private final BucketInstanceRepository bucketInstanceRepository;
     private final UserCacheService userCacheService;
+    private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
     public void reactivateExpiredRecurrentServices() {
-        log.info("Reactivate expired recurrent services started..");
+        // Generate unique batch ID for this processing run
+        String batchId = UUID.randomUUID().toString();
+        log.info("Reactivate expired recurrent services started with batch ID: {}", batchId);
 
         int pageNumber = 0;
         Pageable pageable = PageRequest.of(pageNumber, chunkSize);
@@ -129,6 +137,8 @@ public class RecurrentServiceService {
                     log.warn("User not found for service ID: {}, username: {}",
                             serviceInstance.getId(), serviceInstance.getUsername());
                     failureCount++;
+                    saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+                            new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
                     continue;
                 }
 
@@ -136,6 +146,8 @@ public class RecurrentServiceService {
                 if (plan == null) {
                     log.error("Plan not found: {}", serviceInstance.getPlanId());
                     failureCount++;
+                    saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+                            new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
                     continue;
                 }
 
@@ -156,6 +168,10 @@ public class RecurrentServiceService {
                     failureCount++;
                     log.error("Failed to process service ID: {} for user: {}. Error: {}",
                             serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
+
+                    // Save failure details to database for tracking and retry
+                    saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
+
                     // Continue processing other services even if this one fails
                 }
             }
@@ -690,6 +706,81 @@ public class RecurrentServiceService {
         }
 
         return balances;
+    }
+
+    /**
+     * Saves service processing failure details to the database.
+     * This method persists failure information for monitoring, analysis, and potential retry attempts.
+     *
+     * @param serviceInstance The service instance that failed
+     * @param plan The plan associated with the service (can be null if plan not found)
+     * @param username The username associated with the failed service
+     * @param exception The exception that caused the failure
+     * @param batchId The batch ID of the processing run
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void saveServiceProcessingFailure(ServiceInstance serviceInstance, Plan plan,
+                                             String username, Exception exception, String batchId) {
+        try {
+            // Extract stack trace
+            String stackTrace = getStackTrace(exception);
+            String errorMessage = exception.getMessage();
+            String errorType = exception.getClass().getSimpleName();
+
+            // Build additional info
+            String additionalInfo = String.format("ServiceId: %d, NextCycleStart: %s",
+                    serviceInstance.getId(),
+                    serviceInstance.getNextCycleStartDate());
+
+            // Create failure record
+            ServiceProcessingFailure failure = ServiceProcessingFailure.builder()
+                    .serviceInstanceId(serviceInstance.getId())
+                    .username(username)
+                    .planId(serviceInstance.getPlanId())
+                    .planName(plan != null ? plan.getPlanName() : serviceInstance.getPlanName())
+                    .errorType(errorType)
+                    .errorMessage(truncateString(errorMessage, 4000))
+                    .stackTrace(truncateString(stackTrace, 4000))
+                    .retryCount(0)
+                    .processingStatus("FAILED")
+                    .batchId(batchId)
+                    .additionalInfo(truncateString(additionalInfo, 1000))
+                    .build();
+
+            serviceProcessingFailureRepository.save(failure);
+            log.debug("Saved failure record for service ID: {}, username: {}", serviceInstance.getId(), username);
+
+        } catch (Exception ex) {
+            // Log but don't throw - we don't want failure tracking to break the main processing
+            log.error("Failed to save processing failure record for service ID: {}. Error: {}",
+                    serviceInstance.getId(), ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Extracts stack trace from exception as a string
+     */
+    private String getStackTrace(Exception exception) {
+        if (exception == null) {
+            return "";
+        }
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        exception.printStackTrace(pw);
+        return sw.toString();
+    }
+
+    /**
+     * Truncates a string to specified max length
+     */
+    private String truncateString(String str, int maxLength) {
+        if (str == null) {
+            return null;
+        }
+        if (str.length() <= maxLength) {
+            return str;
+        }
+        return str.substring(0, maxLength - 3) + "...";
     }
 
 }
