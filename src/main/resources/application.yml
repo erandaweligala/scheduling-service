@@ -43,6 +43,26 @@ springdoc:
     path: /v3/api-docs
 
 spring:
+  # Redis Configuration
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:  # Set password if Redis requires authentication
+      timeout: 5000ms
+      jedis:
+        pool:
+          max-active: 50      # Maximum active connections in pool
+          max-idle: 20        # Maximum idle connections in pool
+          min-idle: 10        # Minimum idle connections in pool
+          max-wait: 2000ms    # Maximum time to wait for connection from pool
+  cache:
+    type: redis
+    redis:
+      time-to-live: 3600000  # Default TTL: 1 hour (in milliseconds)
+      cache-null-values: false  # Don't cache null values
+      use-key-prefix: true      # Use cache name as key prefix
+      key-prefix: "scheduling-service:"
   datasource:
 #    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
     url: jdbc:oracle:thin:@localhost:1522/ORCL
