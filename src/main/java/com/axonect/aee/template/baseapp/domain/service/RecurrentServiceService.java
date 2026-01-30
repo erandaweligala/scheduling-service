@@ -16,7 +16,6 @@ import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.UserEntity;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
-import com.axonect.aee.template.baseapp.domain.enums.UserStatus;
 import com.axonect.aee.template.baseapp.domain.exception.AAAException;
 import com.axonect.aee.template.baseapp.domain.util.Constants;
 import com.axonect.aee.template.baseapp.domain.util.LogMessages;
@@ -36,10 +35,8 @@ import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -246,63 +243,7 @@ public class RecurrentServiceService {
 
     }
 
-    private LocalDateTime getCycleStartDate(LocalDateTime serviceStartDate, Integer cycleDate) {
-        log.debug("Calculating cycle start date for service start: {}, cycle date: {}", serviceStartDate, cycleDate);
 
-        // Get the cycle date of the current month at midnight
-        LocalDateTime currentMonthCycleDate = serviceStartDate.withDayOfMonth(cycleDate)
-                .toLocalDate().atStartOfDay();
-
-        // If service start date is before the cycle date of current month, use previous month
-        if (serviceStartDate.toLocalDate().isBefore(currentMonthCycleDate.toLocalDate())) {
-            LocalDateTime previousMonth = currentMonthCycleDate.minusMonths(1);
-            log.debug("Service starts before cycle date, cycle start date is in previous month: {}", previousMonth);
-            return previousMonth;
-        } else {
-            // Service starts on or after cycle date, use current month
-            log.debug("Cycle start date is in current month: {}", currentMonthCycleDate);
-            return currentMonthCycleDate;
-        }
-    }
-
-    private void provisionQuota(ServiceInstance serviceInstance, String planId) {
-        log.debug("Starting quota provisioning for Service Instance ID: {}, Plan: {}",
-                serviceInstance.getId(), planId);
-
-        try {
-            Long serviceId = serviceInstance.getId();
-
-            List<BucketInstance> bucketInstanceList = bucketInstanceRepository.findByServiceId(serviceId);
-            if (bucketInstanceList == null || bucketInstanceList.isEmpty()){
-                log.error("No quota details found for Service ID: {}", serviceId);
-                throw new AAAException(LogMessages.ERROR_NOT_FOUND,"NO_QUOTA_DETAILS_FOUND_FOR_SERVICE",HttpStatus.NOT_FOUND);
-            }
-
-            List<PlanToBucket> quotaDetails = planToBucketRepository.findByPlanId(planId);
-            if (quotaDetails == null || quotaDetails.isEmpty()) {
-                log.error("No quota details found for Plan ID: {}", planId);
-                throw new AAAException(LogMessages.ERROR_NOT_FOUND,"NO_QUOTA_DETAILS_FOUND",HttpStatus.NOT_FOUND);
-            }
-            log.debug("Found {} quota details for Plan ID: {}", quotaDetails.size(), planId);
-
-
-            log.debug("Performing new quota provision for Service Instance ID: {}", serviceInstance.getId());
-            newQuotaProvision(quotaDetails, serviceInstance);
-
-            log.debug("Performing carry forward provision for Service Instance ID: {}", serviceInstance.getId());
-            createCarryForwardBuckets(bucketInstanceList, quotaDetails, serviceInstance);
-
-//            log.debug("Performing delete expired quota for Service Instance ID: {}", serviceInstance.getId());
-//            deleteExpiredBucketInstance(bucketInstanceList, serviceId);
-        } catch (AAAException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Error provisioning quota for Service Instance ID: {}, Plan: {}",
-                    serviceInstance.getId(), planId, ex);
-            throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-
-    }
 
     private void provisionQuotaOptimized(ServiceInstance serviceInstance, List<BucketInstance> bucketInstanceList,
                                          List<PlanToBucket> quotaDetails, Map<String, Bucket> bucketMap,
@@ -351,7 +292,7 @@ public class RecurrentServiceService {
             }
             bucketInstanceRepository.saveAll(bucketInstanceList);
             log.info("Saved {} bucket instances for Service Instance ID: {}",
-                    bucketInstanceList.size(), serviceInstance.getId());//todo need to implement add bucketInstanceList
+                    bucketInstanceList.size(), serviceInstance.getId());
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -417,7 +358,7 @@ public class RecurrentServiceService {
             bucketInstance.setCurrentBalance(planToBucket.getInitialQuota());
             bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
             bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
-            bucketInstance.setExpiration(serviceInstance.getExpiryDate());
+            bucketInstance.setExpiration(serviceInstance.getServiceCycleEndDate());
             bucketInstance.setUsage(0L);
 
             if (isCFBucket && currentBalance != null){
@@ -517,93 +458,8 @@ public class RecurrentServiceService {
             );
         }
     }
-    private void createCarryForwardBuckets(List<BucketInstance> currentBucketInstanceList, List<PlanToBucket> quotaDetails
-            , ServiceInstance serviceInstance){
 
-        Long serviceId = serviceInstance.getId();
-        log.debug("Starting create carry forward buckets for Service Instance ID: {}, Quota count: {}",
-                serviceId, quotaDetails.size());
-
-        try {
-            List<BucketInstance> newCarryForwardBucketList = new ArrayList<>();
-            List<BucketInstance> existingCFBucketList = new ArrayList<>();
-            LocalDate tomorrow  = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE)).plusDays(1);
-
-            // filter the carry forward bucket from existing bucket list (to validate Total CF limit)
-            for (BucketInstance currentBucketInstance : currentBucketInstanceList) {
-                if (currentBucketInstance.getBucketType().equals(Constants.CARRY_FORWARD_BUCKET)
-                        && !currentBucketInstance.getExpiration().toLocalDate().isEqual(tomorrow)){
-                    existingCFBucketList.add(currentBucketInstance);
-                }
-            }
-            existingCFBucketList.sort(Comparator.comparing(BucketInstance::getExpiration));
-
-            for (PlanToBucket planToBucket : quotaDetails) {
-                List<BucketInstance> currentCFBucketsForIdList = new ArrayList<>();
-                Long totalCurrentCFAmount = 0L;
-
-                if (Boolean.TRUE.equals(planToBucket.getCarryForward())){
-                    BucketInstance carryForwardBucket = currentBucketInstanceList.stream()
-                            .filter(b -> planToBucket.getBucketId().equals(b.getBucketId()))
-                            .findFirst().orElse(null);
-                    if (carryForwardBucket != null && carryForwardBucket.getCurrentBalance() != null
-                            && carryForwardBucket.getCurrentBalance() != 0L) {
-                        BucketInstance bucketInstance = new BucketInstance();
-                        setBucketDetails(planToBucket.getBucketId(), bucketInstance, serviceInstance, planToBucket,
-                                Boolean.TRUE, carryForwardBucket.getCurrentBalance());
-
-                        for (BucketInstance existingCFBucket : existingCFBucketList){
-                            if (existingCFBucket.getBucketId().equals(planToBucket.getBucketId())){
-                                currentCFBucketsForIdList.add(existingCFBucket);
-                                totalCurrentCFAmount += existingCFBucket.getCurrentBalance();
-                            }
-                        }
-                        totalCurrentCFAmount += bucketInstance.getCurrentBalance();
-
-                        for (BucketInstance currentCFBucketListForId : currentCFBucketsForIdList) {
-                            if (totalCurrentCFAmount < bucketInstance.getTotalCarryForward())
-                                break;
-                            Long a = totalCurrentCFAmount - bucketInstance.getTotalCarryForward();
-                            if (a < currentCFBucketListForId.getCurrentBalance()) {
-                                currentCFBucketListForId.setCurrentBalance(currentCFBucketListForId.getCurrentBalance() - a);
-                                bucketInstanceRepository.save(currentCFBucketListForId);
-                                break;
-                            } else {
-                                currentCFBucketListForId.setCurrentBalance(0L);
-                                totalCurrentCFAmount -= currentCFBucketListForId.getCurrentBalance();
-                            }
-                            bucketInstanceRepository.save(currentCFBucketListForId);
-
-                        }
-
-                        newCarryForwardBucketList.add(bucketInstance);
-
-                        log.debug("Identified carry forward bucket- Bucket ID: {}, serviceId: {}",
-                                planToBucket.getBucketId(), serviceId);
-                    } else if (carryForwardBucket == null) {
-                        log.error("Bucket Id: {} Bucket is not in current bucket list. Service Id: {}"
-                                ,planToBucket.getBucketId(), serviceId);
-                    }
-                }
-            }
-            bucketInstanceRepository.saveAll(newCarryForwardBucketList);
-            log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
-                    newCarryForwardBucketList.size(), serviceId);
-
-//            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
-//                    ,newCarryForwardBucketList);
-
-        } catch (AAAException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Error during create carry forward buckets for Service Instance ID: {}",
-                    serviceId, ex);
-            throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-
-
-    }
-
+    //todo SonarQube: Refactor this method to reduce its Cognitive Complexity from 42 to the 15 allowed.
     private void createCarryForwardBucketsOptimized(List<BucketInstance> currentBucketInstanceList, List<PlanToBucket> quotaDetails,
                                                     ServiceInstance serviceInstance, Map<String, Bucket> bucketMap,
                                                     Map<Long, QOSProfile> qosProfileMap) {
@@ -723,19 +579,18 @@ public class RecurrentServiceService {
 
         try {
             // Get user entity to retrieve userId
-            UserEntity user = userRepository.findAllByUserName(username);
-            if (user == null) {
+            if (username == null) {
                 log.error("User not found for username: {}", username);
                 throw new AAAException(LogMessages.ERROR_NOT_FOUND,
                         "USER_NOT_FOUND: " + username, HttpStatus.NOT_FOUND);
             }
 
             // Get existing user session data from Redis cache
-            UserSessionData userSessionData = userCacheService.getUserData(user.getUserId());
+            UserSessionData userSessionData = userCacheService.getUserData(username);
 
             if (userSessionData == null) {
-                log.warn("No user session data found in cache for userId: {}, username: {}. Skipping cache update.",
-                        user.getUserId(), username);
+                log.warn("No user session data found in cache for username: {}. Skipping cache update.",
+                        username);
                 return;
             }
 
@@ -752,7 +607,7 @@ public class RecurrentServiceService {
                     newBalances.size(), username);
 
             // Update Redis cache with updated user session data
-            userCacheService.updateUserAndRelatedCaches(user.getUserId(), userSessionData, username);
+            userCacheService.updateUserAndRelatedCaches(username, userSessionData, username);
 
             log.info("Successfully updated cache for username: {} with {} new bucket instances",
                     username, newBucketInstances.size());
@@ -785,7 +640,7 @@ public class RecurrentServiceService {
             balance.setQuota(bucketInstance.getCurrentBalance());
             balance.setServiceExpiry(serviceInstance.getExpiryDate());
             balance.setBucketExpiryDate(bucketInstance.getExpiration());
-            balance.setBucketId(bucketInstance.getBucketId());
+            balance.setBucketId(String.valueOf(bucketInstance.getId()));
             balance.setServiceId(bucketInstance.getServiceId() != null ?
                     bucketInstance.getServiceId().toString() : null);
             balance.setPriority(bucketInstance.getPriority());
