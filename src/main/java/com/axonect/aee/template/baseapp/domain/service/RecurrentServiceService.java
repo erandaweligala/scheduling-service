@@ -6,6 +6,7 @@ import com.axonect.aee.template.baseapp.application.repository.PlanRepository;
 import com.axonect.aee.template.baseapp.application.repository.PlanToBucketRepository;
 import com.axonect.aee.template.baseapp.application.repository.QOSProfileRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
+import com.axonect.aee.template.baseapp.application.repository.ServiceProcessingFailureRepository;
 import com.axonect.aee.template.baseapp.application.repository.UserRepository;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Bucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
@@ -13,6 +14,7 @@ import com.axonect.aee.template.baseapp.domain.entities.repo.Plan;
 import com.axonect.aee.template.baseapp.domain.entities.repo.PlanToBucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.QOSProfile;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
+import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceProcessingFailure;
 import com.axonect.aee.template.baseapp.domain.entities.repo.UserEntity;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
@@ -27,8 +29,11 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -40,6 +45,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -55,13 +61,15 @@ public class RecurrentServiceService {
     private final QOSProfileRepository qosProfileRepository;
     private final BucketInstanceRepository bucketInstanceRepository;
     private final UserCacheService userCacheService;
+    private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    @Transactional(timeout = 3600)  // 1 hour timeout for large batch processing
     public void reactivateExpiredRecurrentServices() {
-        log.info("Reactivate expired recurrent services started..");
+        // Generate unique batch ID for this processing run
+        String batchId = UUID.randomUUID().toString();
+        log.info("Reactivate expired recurrent services started with batch ID: {}", batchId);
 
         int pageNumber = 0;
         Pageable pageable = PageRequest.of(pageNumber, chunkSize);
@@ -71,6 +79,9 @@ public class RecurrentServiceService {
                 .plusDays(1)
                 .atStartOfDay();
         LocalDateTime tomorrowEnd = tomorrowStart.plusDays(1);
+
+        int successCount = 0;
+        int failureCount = 0;
 
         do {
             servicePage = serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
@@ -119,46 +130,96 @@ public class RecurrentServiceService {
             Map<Long, QOSProfile> qosProfileMap = qosProfileRepository.findByIdIn(qosIds).stream()
                     .collect(Collectors.toMap(QOSProfile::getId, q -> q));
 
-            // Process each service with pre-loaded data
-            List<ServiceInstance> servicesToUpdate = new ArrayList<>();
-
+            // Process each service in its own transaction
             for (ServiceInstance serviceInstance : services) {
                 UserEntity user = userMap.get(serviceInstance.getUsername());
                 if (user == null) {
                     log.warn("User not found for service ID: {}, username: {}",
                             serviceInstance.getId(), serviceInstance.getUsername());
+                    failureCount++;
+                    saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+                            new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
                     continue;
                 }
 
                 Plan plan = planMap.get(serviceInstance.getPlanId());
                 if (plan == null) {
                     log.error("Plan not found: {}", serviceInstance.getPlanId());
+                    failureCount++;
+                    saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+                            new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
                     continue;
                 }
 
-                log.info("Updating service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
-                updateCycleManagementProperties(serviceInstance, plan, user);
-                servicesToUpdate.add(serviceInstance);
-            }
+                try {
+                    // Each service is processed in its own independent transaction
+                    processServiceInstanceInTransaction(
+                            serviceInstance,
+                            user,
+                            plan,
+                            bucketInstanceMap.get(serviceInstance.getId()),
+                            planToBucketMap.get(plan.getPlanId()),
+                            bucketMap,
+                            qosProfileMap
+                    );
+                    successCount++;
+                    log.info("Successfully processed service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
+                } catch (Exception ex) {
+                    failureCount++;
+                    log.error("Failed to process service ID: {} for user: {}. Error: {}",
+                            serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
 
-            // BATCH SAVE: Save all updated service instances at once
-            serviceInstanceRepository.saveAll(servicesToUpdate);
-            log.info("Saved {} updated service instances", servicesToUpdate.size());
+                    // Save failure details to database for tracking and retry
+                    saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
 
-            // Process quotas for each service with pre-loaded data
-            for (ServiceInstance serviceInstance : servicesToUpdate) {
-                Plan plan = planMap.get(serviceInstance.getPlanId());
-                List<BucketInstance> bucketInstanceList = bucketInstanceMap.get(serviceInstance.getId());
-                List<PlanToBucket> quotaDetails = planToBucketMap.get(plan.getPlanId());
-
-                provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
+                    // Continue processing other services even if this one fails
+                }
             }
 
             pageNumber++;
             pageable = PageRequest.of(pageNumber, chunkSize);
 
         } while (!servicePage.isLast());
-        log.info("Reactivate expired recurrent services Completed..");
+
+        log.info("Reactivate expired recurrent services Completed. Success: {}, Failures: {}",
+                successCount, failureCount);
+    }
+
+    /**
+     * Processes a single service instance in its own transaction.
+     * Each service gets an independent transaction that can commit or rollback without affecting others.
+     *
+     * @param serviceInstance The service instance to process
+     * @param user The user entity
+     * @param plan The plan entity
+     * @param bucketInstanceList List of bucket instances for this service
+     * @param quotaDetails Quota details from plan
+     * @param bucketMap Map of bucket IDs to bucket entities
+     * @param qosProfileMap Map of QoS profile IDs to QoS profiles
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = 3600)
+    public void processServiceInstanceInTransaction(
+            ServiceInstance serviceInstance,
+            UserEntity user,
+            Plan plan,
+            List<BucketInstance> bucketInstanceList,
+            List<PlanToBucket> quotaDetails,
+            Map<String, Bucket> bucketMap,
+            Map<Long, QOSProfile> qosProfileMap) {
+
+        log.debug("Processing service instance ID: {} in new transaction", serviceInstance.getId());
+
+        // Update cycle management properties
+        updateCycleManagementProperties(serviceInstance, plan, user);
+
+        // Save the updated service instance
+        serviceInstanceRepository.save(serviceInstance);
+        log.debug("Saved service instance ID: {}", serviceInstance.getId());
+
+        // Provision quotas
+        provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
+
+        log.debug("Completed processing service instance ID: {} in transaction", serviceInstance.getId());
     }
 
     private void updateCycleManagementProperties(ServiceInstance serviceInstance, Plan plan, UserEntity user){
@@ -645,6 +706,81 @@ public class RecurrentServiceService {
         }
 
         return balances;
+    }
+
+    /**
+     * Saves service processing failure details to the database.
+     * This method persists failure information for monitoring, analysis, and potential retry attempts.
+     *
+     * @param serviceInstance The service instance that failed
+     * @param plan The plan associated with the service (can be null if plan not found)
+     * @param username The username associated with the failed service
+     * @param exception The exception that caused the failure
+     * @param batchId The batch ID of the processing run
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void saveServiceProcessingFailure(ServiceInstance serviceInstance, Plan plan,
+                                             String username, Exception exception, String batchId) {
+        try {
+            // Extract stack trace
+            String stackTrace = getStackTrace(exception);
+            String errorMessage = exception.getMessage();
+            String errorType = exception.getClass().getSimpleName();
+
+            // Build additional info
+            String additionalInfo = String.format("ServiceId: %d, NextCycleStart: %s",
+                    serviceInstance.getId(),
+                    serviceInstance.getNextCycleStartDate());
+
+            // Create failure record
+            ServiceProcessingFailure failure = ServiceProcessingFailure.builder()
+                    .serviceInstanceId(serviceInstance.getId())
+                    .username(username)
+                    .planId(serviceInstance.getPlanId())
+                    .planName(plan != null ? plan.getPlanName() : serviceInstance.getPlanName())
+                    .errorType(errorType)
+                    .errorMessage(truncateString(errorMessage, 4000))
+                    .stackTrace(truncateString(stackTrace, 4000))
+                    .retryCount(0)
+                    .processingStatus("FAILED")
+                    .batchId(batchId)
+                    .additionalInfo(truncateString(additionalInfo, 1000))
+                    .build();
+
+            serviceProcessingFailureRepository.save(failure);
+            log.debug("Saved failure record for service ID: {}, username: {}", serviceInstance.getId(), username);
+
+        } catch (Exception ex) {
+            // Log but don't throw - we don't want failure tracking to break the main processing
+            log.error("Failed to save processing failure record for service ID: {}. Error: {}",
+                    serviceInstance.getId(), ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Extracts stack trace from exception as a string
+     */
+    private String getStackTrace(Exception exception) {
+        if (exception == null) {
+            return "";
+        }
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        exception.printStackTrace(pw);
+        return sw.toString();
+    }
+
+    /**
+     * Truncates a string to specified max length
+     */
+    private String truncateString(String str, int maxLength) {
+        if (str == null) {
+            return null;
+        }
+        if (str.length() <= maxLength) {
+            return str;
+        }
+        return str.substring(0, maxLength - 3) + "...";
     }
 
 }
