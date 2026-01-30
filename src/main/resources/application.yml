@@ -50,22 +50,54 @@ spring:
     password: Aaa!89nky78D
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
-      minimum-idle: 5
-      maximum-pool-size: 20
-      idle-timeout: 600000      # 10 minutes: close idle connections
-      connection-timeout: 30000 # 30 seconds to get a connection
+      # OPTIMIZED for 5M service_instance + 10M bucket_instance records
+      minimum-idle: 10  # Keep at least 10 connections ready
+      maximum-pool-size: 50  # Increased from 20 to handle high volume
+      idle-timeout: 300000      # 5 minutes: close idle connections faster
+      connection-timeout: 20000 # 20 seconds to get a connection
       max-lifetime: 1800000     # 30 minutes: max life of a connection
-      validation-timeout: 5000  # 5 seconds to validate connection
+      validation-timeout: 3000  # 3 seconds to validate connection
+      leak-detection-threshold: 60000  # 60 seconds: detect connection leaks
       initialization-fail-timeout: 0 # Prevent app from failing if DB not ready
       pool-name: OraclePool
+      auto-commit: false  # Explicit transaction control for better performance
+      # Oracle-specific optimizations
+      data-source-properties:
+        oracle.jdbc.implicitStatementCacheSize: 50  # Cache prepared statements
+        oracle.net.CONNECT_TIMEOUT: 20000  # 20 seconds
+        oracle.jdbc.ReadTimeout: 60000  # 60 seconds for large queries
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false  # Disable SQL logging in production for performance
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
         dialect: org.hibernate.dialect.OracleDialect
+        # CRITICAL: Batch processing settings for massive scale (5M+ records)
+        jdbc:
+          batch_size: 100  # Process 100 inserts/updates in a single batch
+          fetch_size: 100  # Fetch 100 rows at a time from result set
+          batch_versioned_data: true  # Enable batch updates for versioned entities
+        order_inserts: true  # Order inserts by entity type for better batching
+        order_updates: true  # Order updates by entity type for better batching
+        # Connection release optimization
+        connection:
+          provider_disables_autocommit: false  # Let Hibernate manage transactions
+        # Query optimization
+        query:
+          in_clause_parameter_padding: true  # Optimize IN clause queries
+          plan_cache_max_size: 2048  # Increase query plan cache
+          plan_parameter_metadata_max_size: 256
+        # Statement fetching optimization
+        max_fetch_depth: 3  # Limit depth of outer joins
+        default_batch_fetch_size: 16  # Batch fetch associated entities
+        # Cache settings (minimal for high-volume batch processing)
+        cache:
+          use_second_level_cache: false  # Disable L2 cache for batch jobs
+          use_query_cache: false  # Disable query cache for batch jobs
+        # Statistics for monitoring (disable in production if not needed)
+        generate_statistics: false  # Disable for better performance
 
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
