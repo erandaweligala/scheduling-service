@@ -535,29 +535,51 @@ public class RecurrentServiceService {
     }
 
     /**
+     * Context object for carry forward bucket processing
+     * Groups related parameters to reduce method parameter count
+     */
+    private static class CarryForwardContext {
+        final ServiceInstance serviceInstance;
+        final Map<String, Bucket> bucketMap;
+        final Map<Long, QOSProfile> qosProfileMap;
+        final Map<String, List<BucketInstance>> existingCFBucketsByIdMap;
+        final List<BucketInstance> newCarryForwardBucketList;
+        final List<BucketInstance> updatesToSave;
+
+        CarryForwardContext(ServiceInstance serviceInstance,
+                           Map<String, Bucket> bucketMap,
+                           Map<Long, QOSProfile> qosProfileMap,
+                           Map<String, List<BucketInstance>> existingCFBucketsByIdMap,
+                           List<BucketInstance> newCarryForwardBucketList,
+                           List<BucketInstance> updatesToSave) {
+            this.serviceInstance = serviceInstance;
+            this.bucketMap = bucketMap;
+            this.qosProfileMap = qosProfileMap;
+            this.existingCFBucketsByIdMap = existingCFBucketsByIdMap;
+            this.newCarryForwardBucketList = newCarryForwardBucketList;
+            this.updatesToSave = updatesToSave;
+        }
+    }
+
+    /**
      * Processes a single carry forward bucket creation
      */
     private void processCarryForwardBucket(PlanToBucket planToBucket,
                                           BucketInstance carryForwardBucket,
-                                          ServiceInstance serviceInstance,
-                                          Map<String, Bucket> bucketMap,
-                                          Map<Long, QOSProfile> qosProfileMap,
-                                          Map<String, List<BucketInstance>> existingCFBucketsByIdMap,
-                                          List<BucketInstance> newCarryForwardBucketList,
-                                          List<BucketInstance> updatesToSave) {
+                                          CarryForwardContext context) {
         BucketInstance bucketInstance = new BucketInstance();
-        setBucketDetailsOptimized(planToBucket.getBucketId(), bucketInstance, serviceInstance, planToBucket,
-                Boolean.TRUE, carryForwardBucket.getCurrentBalance(), bucketMap, qosProfileMap);
+        setBucketDetailsOptimized(planToBucket.getBucketId(), bucketInstance, context.serviceInstance, planToBucket,
+                Boolean.TRUE, carryForwardBucket.getCurrentBalance(), context.bucketMap, context.qosProfileMap);
 
-        List<BucketInstance> existingCFBuckets = existingCFBucketsByIdMap.get(planToBucket.getBucketId());
+        List<BucketInstance> existingCFBuckets = context.existingCFBucketsByIdMap.get(planToBucket.getBucketId());
         Long totalCFAmount = calculateTotalCFAmount(bucketInstance, existingCFBuckets);
 
         if (existingCFBuckets != null) {
             adjustExistingCFBuckets(existingCFBuckets, totalCFAmount,
-                bucketInstance.getTotalCarryForward(), updatesToSave);
+                bucketInstance.getTotalCarryForward(), context.updatesToSave);
         }
 
-        newCarryForwardBucketList.add(bucketInstance);
+        context.newCarryForwardBucketList.add(bucketInstance);
     }
 
     /**
@@ -586,6 +608,10 @@ public class RecurrentServiceService {
             Map<String, List<BucketInstance>> existingCFBucketsByIdMap =
                 buildExistingCFBucketsMap(currentBucketInstanceList, tomorrow);
 
+            CarryForwardContext context = new CarryForwardContext(
+                serviceInstance, bucketMap, qosProfileMap, existingCFBucketsByIdMap,
+                newCarryForwardBucketList, updatesToSave);
+
             Map<String, BucketInstance> currentBucketMap = currentBucketInstanceList.stream()
                     .collect(Collectors.toMap(BucketInstance::getBucketId, b -> b, (b1, b2) -> b1));
 
@@ -594,9 +620,7 @@ public class RecurrentServiceService {
                     BucketInstance carryForwardBucket = currentBucketMap.get(planToBucket.getBucketId());
 
                     if (hasValidBalance(carryForwardBucket)) {
-                        processCarryForwardBucket(planToBucket, carryForwardBucket, serviceInstance,
-                            bucketMap, qosProfileMap, existingCFBucketsByIdMap,
-                            newCarryForwardBucketList, updatesToSave);
+                        processCarryForwardBucket(planToBucket, carryForwardBucket, context);
                     } else if (carryForwardBucket == null) {
                         log.error("Bucket Id: {} Bucket is not in current bucket list. Service Id: {}",
                                 planToBucket.getBucketId(), serviceId);
