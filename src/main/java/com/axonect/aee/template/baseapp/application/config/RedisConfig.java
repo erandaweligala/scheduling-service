@@ -7,8 +7,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.SocketOptions;
 import io.lettuce.core.TimeoutOptions;
-import io.lettuce.core.cluster.ClusterClientOptions;
-import io.lettuce.core.cluster.ClusterTopologyRefreshOptions;
 import io.lettuce.core.protocol.ProtocolVersion;
 import io.lettuce.core.resource.ClientResources;
 import io.lettuce.core.resource.DefaultClientResources;
@@ -26,7 +24,6 @@ import org.springframework.data.redis.connection.lettuce.LettuceClientConfigurat
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettucePoolingClientConfiguration;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -37,8 +34,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * High-Performance Redis Configuration using Lettuce Reactive Client
- * Similar to Quarkus ReactiveRedisDataSource with ReactiveValueCommands
+ * High-Performance Redis Configuration using Lettuce Client
+ * Optimized for high-throughput blocking operations
  */
 @Configuration
 @EnableCaching
@@ -122,7 +119,7 @@ public class RedisConfig {
 
     /**
      * Configure High-Performance Lettuce Connection Factory
-     * This replaces Jedis with Lettuce for reactive support
+     * This replaces Jedis with Lettuce for better performance and pooling
      */
     @Bean
     public LettuceConnectionFactory redisConnectionFactory(
@@ -260,75 +257,6 @@ public class RedisConfig {
         template.setHashValueSerializer(serializer);
 
         template.afterPropertiesSet();
-        return template;
-    }
-
-    /**
-     * Configure ReactiveRedisTemplate for high-performance reactive operations
-     * This is the Spring Boot equivalent of Quarkus ReactiveRedisDataSource with ReactiveValueCommands
-     */
-    @Bean
-    public ReactiveRedisTemplate<String, String> reactiveRedisTemplate(
-            LettuceConnectionFactory connectionFactory) {
-        log.info("Initializing ReactiveRedisTemplate for reactive Redis operations");
-
-        StringRedisSerializer keySerializer = new StringRedisSerializer();
-        StringRedisSerializer valueSerializer = new StringRedisSerializer();
-
-        RedisSerializationContext<String, String> serializationContext = RedisSerializationContext
-                .<String, String>newSerializationContext()
-                .key(keySerializer)
-                .value(valueSerializer)
-                .hashKey(keySerializer)
-                .hashValue(valueSerializer)
-                .build();
-
-        ReactiveRedisTemplate<String, String> template = new ReactiveRedisTemplate<>(
-                connectionFactory,
-                serializationContext
-        );
-
-        log.info("ReactiveRedisTemplate configured successfully");
-        return template;
-    }
-
-    /**
-     * Configure ReactiveRedisTemplate for JSON objects
-     * Similar to Quarkus ReactiveValueCommands with JSON support
-     */
-    @Bean
-    public ReactiveRedisTemplate<String, Object> reactiveRedisTemplateJson(
-            LettuceConnectionFactory connectionFactory) {
-        log.info("Initializing ReactiveRedisTemplate for JSON objects");
-
-        // Create ObjectMapper for JSON serialization
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
-        objectMapper.activateDefaultTyping(
-                BasicPolymorphicTypeValidator.builder()
-                        .allowIfBaseType(Object.class)
-                        .build(),
-                ObjectMapper.DefaultTyping.NON_FINAL,
-                JsonTypeInfo.As.PROPERTY
-        );
-
-        GenericJackson2JsonRedisSerializer jsonSerializer = new GenericJackson2JsonRedisSerializer(objectMapper);
-        StringRedisSerializer keySerializer = new StringRedisSerializer();
-
-        RedisSerializationContext<String, Object> serializationContext = RedisSerializationContext
-                .<String, Object>newSerializationContext()
-                .key(keySerializer)
-                .value(jsonSerializer)
-                .hashKey(keySerializer)
-                .hashValue(jsonSerializer)
-                .build();
-
-        ReactiveRedisTemplate<String, Object> template = new ReactiveRedisTemplate<>(
-                connectionFactory,
-                serializationContext
-        );
-
-        log.info("ReactiveRedisTemplate for JSON configured successfully");
         return template;
     }
 }
