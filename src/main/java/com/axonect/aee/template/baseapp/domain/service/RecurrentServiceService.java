@@ -54,62 +54,74 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    //todo need to implement first get services this filters apply ( NEXT_CYCLE_START_DATE = Tommorow and RECURRING_FLAG = 1 and not expired service EXPIRY_DATE   ) need get batch process
+    /**
+     * Batch process to reactivate recurring services that are due for the next cycle.
+     * Filters services based on:
+     * - NEXT_CYCLE_START_DATE = Tomorrow
+     * - RECURRING_FLAG = true
+     * - EXPIRY_DATE is in the future (not expired)
+     * Processes services in chunks for better performance.
+     */
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
 
         int pageNumber = 0;
         Pageable pageable = PageRequest.of(pageNumber, chunkSize);
-        Page<UserEntity> userPage;
-        Page<String> userNamePage;
+        Page<ServiceInstance> servicePage;
+
+        LocalDateTime tomorrowStart = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE))
+                .plusDays(1)
+                .atStartOfDay(); // 00:00:00
 
         do {
-            userNamePage = userRepository.findUserNamesByStatus(UserStatus.ACTIVE, pageable);
-            List<String> userNames = userNamePage.getContent();
+            // Get services directly with filters: RECURRING_FLAG = 1, NEXT_CYCLE_START_DATE = Tomorrow, not expired
+            servicePage = serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
+                    tomorrowStart,
+                    tomorrowStart,
+                    pageable
+            );
 
-             log.debug("Processing user: {}", userNames);
+            List<ServiceInstance> services = servicePage.getContent();
+            log.info("Processing {} services in batch (page {})", services.size(), pageNumber);
 
-            LocalDateTime tomorrowStart = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE))
-                    .plusDays(1)
-                    .atStartOfDay(); // 00:00:00
-
-                List<ServiceInstance> services = serviceInstanceRepository
-                        .findByUsernameInAndRecurringFlagTrueAndNextCycleStartDate(
-                                userNames,
-                                tomorrowStart
-                        );
-
-                for (ServiceInstance serviceInstance : services) {
-                    UserEntity user = userRepository.findAllByUserName(serviceInstance.getUsername());
-                    log.info("Updating service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
-
-                    String planId = serviceInstance.getPlanId();
-
-                    Plan plan = planRepository.findByPlanId(planId).
-                            orElseThrow(() -> {
-                                log.error("Plan not found: {}", planId);
-                                return new AAAException(
-                                        LogMessages.ERROR_NOT_FOUND, LogMessages.PLAN_DOES_NOT_EXIST, HttpStatus.NOT_FOUND
-                                );
-                            });
-                    log.debug("Plan found: {} ({}), Recurring: {}", plan.getPlanName(), plan.getPlanType(), plan.getRecurringFlag());
-
-                    updateCycleManagementProperties(serviceInstance, plan, user);
-                    log.debug("Cycle management properties set - Cycle Start: {}, Cycle End: {}, Next Cycle: {}",
-                            serviceInstance.getServiceCycleStartDate(),
-                            serviceInstance.getServiceCycleEndDate(),
-                            serviceInstance.getNextCycleStartDate());
-
-                    serviceInstance = serviceInstanceRepository.save(serviceInstance);
-                    log.info("Service instance updated with ID: {} for User: {}", serviceInstance.getId(), user.getUserName());
-
-                    provisionQuota(serviceInstance, plan.getPlanId());
+            for (ServiceInstance serviceInstance : services) {
+                // Get username from service to fetch user details
+                UserEntity user = userRepository.findAllByUserName(serviceInstance.getUsername());
+                if (user == null) {
+                    log.warn("User not found for service ID: {}, username: {}",
+                            serviceInstance.getId(), serviceInstance.getUsername());
+                    continue;
                 }
+
+                log.info("Updating service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
+
+                String planId = serviceInstance.getPlanId();
+
+                Plan plan = planRepository.findByPlanId(planId).
+                        orElseThrow(() -> {
+                            log.error("Plan not found: {}", planId);
+                            return new AAAException(
+                                    LogMessages.ERROR_NOT_FOUND, LogMessages.PLAN_DOES_NOT_EXIST, HttpStatus.NOT_FOUND
+                            );
+                        });
+                log.debug("Plan found: {} ({}), Recurring: {}", plan.getPlanName(), plan.getPlanType(), plan.getRecurringFlag());
+
+                updateCycleManagementProperties(serviceInstance, plan, user);
+                log.debug("Cycle management properties set - Cycle Start: {}, Cycle End: {}, Next Cycle: {}",
+                        serviceInstance.getServiceCycleStartDate(),
+                        serviceInstance.getServiceCycleEndDate(),
+                        serviceInstance.getNextCycleStartDate());
+
+                serviceInstance = serviceInstanceRepository.save(serviceInstance);
+                log.info("Service instance updated with ID: {} for User: {}", serviceInstance.getId(), user.getUserName());
+
+                provisionQuota(serviceInstance, plan.getPlanId());
+            }
 
             pageNumber++;
             pageable = PageRequest.of(pageNumber, chunkSize);
 
-        } while (!userNamePage.isLast());
+        } while (!servicePage.isLast());
         log.info("Reactivate expired recurrent services Completed..");
     }
 
