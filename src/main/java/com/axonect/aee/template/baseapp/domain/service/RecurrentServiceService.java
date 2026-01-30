@@ -459,9 +459,120 @@ public class RecurrentServiceService {
         }
     }
 
-    //todo SonarQube: Refactor this method to reduce its Cognitive Complexity from 42 to the 15 allowed.
-    private void createCarryForwardBucketsOptimized(List<BucketInstance> currentBucketInstanceList, List<PlanToBucket> quotaDetails,
-                                                    ServiceInstance serviceInstance, Map<String, Bucket> bucketMap,
+    /**
+     * Builds a map of existing carry forward buckets grouped by bucket ID
+     * @param currentBucketInstanceList List of current bucket instances
+     * @param tomorrow Tomorrow's date for filtering
+     * @return Map of bucket ID to list of carry forward bucket instances
+     */
+    private Map<String, List<BucketInstance>> buildExistingCFBucketsMap(
+            List<BucketInstance> currentBucketInstanceList, LocalDate tomorrow) {
+        Map<String, List<BucketInstance>> existingCFBucketsByIdMap = new HashMap<>();
+
+        for (BucketInstance currentBucketInstance : currentBucketInstanceList) {
+            if (isEligibleForCarryForward(currentBucketInstance, tomorrow)) {
+                existingCFBucketsByIdMap
+                        .computeIfAbsent(currentBucketInstance.getBucketId(), k -> new ArrayList<>())
+                        .add(currentBucketInstance);
+            }
+        }
+
+        // Sort each list by expiration
+        existingCFBucketsByIdMap.values().forEach(list ->
+            list.sort(Comparator.comparing(BucketInstance::getExpiration)));
+
+        return existingCFBucketsByIdMap;
+    }
+
+    /**
+     * Checks if a bucket instance is eligible for carry forward
+     */
+    private boolean isEligibleForCarryForward(BucketInstance bucketInstance, LocalDate tomorrow) {
+        return bucketInstance.getBucketType().equals(Constants.CARRY_FORWARD_BUCKET)
+                && !bucketInstance.getExpiration().toLocalDate().isEqual(tomorrow);
+    }
+
+    /**
+     * Calculates total carry forward amount including existing CF buckets
+     */
+    private Long calculateTotalCFAmount(BucketInstance newBucket, List<BucketInstance> existingCFBuckets) {
+        Long total = newBucket.getCurrentBalance();
+
+        if (existingCFBuckets != null) {
+            for (BucketInstance existingCFBucket : existingCFBuckets) {
+                total += existingCFBucket.getCurrentBalance();
+            }
+        }
+
+        return total;
+    }
+
+    /**
+     * Adjusts existing carry forward buckets to respect total carry forward limit
+     */
+    private void adjustExistingCFBuckets(List<BucketInstance> existingCFBuckets,
+                                        Long totalCFAmount,
+                                        Long totalCFLimit,
+                                        List<BucketInstance> updatesToSave) {
+        Long remainingTotal = totalCFAmount;
+
+        for (BucketInstance existingCFBucket : existingCFBuckets) {
+            if (remainingTotal < totalCFLimit) {
+                break;
+            }
+
+            Long excess = remainingTotal - totalCFLimit;
+            if (excess < existingCFBucket.getCurrentBalance()) {
+                existingCFBucket.setCurrentBalance(existingCFBucket.getCurrentBalance() - excess);
+                updatesToSave.add(existingCFBucket);
+                break;
+            } else {
+                remainingTotal -= existingCFBucket.getCurrentBalance();
+                existingCFBucket.setCurrentBalance(0L);
+                updatesToSave.add(existingCFBucket);
+            }
+        }
+    }
+
+    /**
+     * Processes a single carry forward bucket creation
+     */
+    private void processCarryForwardBucket(PlanToBucket planToBucket,
+                                          BucketInstance carryForwardBucket,
+                                          ServiceInstance serviceInstance,
+                                          Map<String, Bucket> bucketMap,
+                                          Map<Long, QOSProfile> qosProfileMap,
+                                          Map<String, List<BucketInstance>> existingCFBucketsByIdMap,
+                                          List<BucketInstance> newCarryForwardBucketList,
+                                          List<BucketInstance> updatesToSave) {
+        BucketInstance bucketInstance = new BucketInstance();
+        setBucketDetailsOptimized(planToBucket.getBucketId(), bucketInstance, serviceInstance, planToBucket,
+                Boolean.TRUE, carryForwardBucket.getCurrentBalance(), bucketMap, qosProfileMap);
+
+        List<BucketInstance> existingCFBuckets = existingCFBucketsByIdMap.get(planToBucket.getBucketId());
+        Long totalCFAmount = calculateTotalCFAmount(bucketInstance, existingCFBuckets);
+
+        if (existingCFBuckets != null) {
+            adjustExistingCFBuckets(existingCFBuckets, totalCFAmount,
+                bucketInstance.getTotalCarryForward(), updatesToSave);
+        }
+
+        newCarryForwardBucketList.add(bucketInstance);
+    }
+
+    /**
+     * Checks if carry forward bucket has a valid balance
+     */
+    private boolean hasValidBalance(BucketInstance bucket) {
+        return bucket != null
+            && bucket.getCurrentBalance() != null
+            && bucket.getCurrentBalance() != 0L;
+    }
+
+    private void createCarryForwardBucketsOptimized(List<BucketInstance> currentBucketInstanceList,
+                                                    List<PlanToBucket> quotaDetails,
+                                                    ServiceInstance serviceInstance,
+                                                    Map<String, Bucket> bucketMap,
                                                     Map<Long, QOSProfile> qosProfileMap) {
         Long serviceId = serviceInstance.getId();
         log.debug("Starting optimized create carry forward buckets for Service Instance ID: {}, Quota count: {}",
@@ -472,21 +583,9 @@ public class RecurrentServiceService {
             List<BucketInstance> updatesToSave = new ArrayList<>();
             LocalDate tomorrow = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE)).plusDays(1);
 
-            // Build HashMap for O(1) lookups - group existing CF buckets by bucket ID
-            Map<String, List<BucketInstance>> existingCFBucketsByIdMap = new HashMap<>();
-            for (BucketInstance currentBucketInstance : currentBucketInstanceList) {
-                if (currentBucketInstance.getBucketType().equals(Constants.CARRY_FORWARD_BUCKET)
-                        && !currentBucketInstance.getExpiration().toLocalDate().isEqual(tomorrow)) {
-                    existingCFBucketsByIdMap
-                            .computeIfAbsent(currentBucketInstance.getBucketId(), k -> new ArrayList<>())
-                            .add(currentBucketInstance);
-                }
-            }
+            Map<String, List<BucketInstance>> existingCFBucketsByIdMap =
+                buildExistingCFBucketsMap(currentBucketInstanceList, tomorrow);
 
-            // Sort each list by expiration
-            existingCFBucketsByIdMap.values().forEach(list -> list.sort(Comparator.comparing(BucketInstance::getExpiration)));
-
-            // Build HashMap for current bucket instances by bucket ID
             Map<String, BucketInstance> currentBucketMap = currentBucketInstanceList.stream()
                     .collect(Collectors.toMap(BucketInstance::getBucketId, b -> b, (b1, b2) -> b1));
 
@@ -494,37 +593,10 @@ public class RecurrentServiceService {
                 if (Boolean.TRUE.equals(planToBucket.getCarryForward())) {
                     BucketInstance carryForwardBucket = currentBucketMap.get(planToBucket.getBucketId());
 
-                    if (carryForwardBucket != null && carryForwardBucket.getCurrentBalance() != null
-                            && carryForwardBucket.getCurrentBalance() != 0L) {
-                        BucketInstance bucketInstance = new BucketInstance();
-                        setBucketDetailsOptimized(planToBucket.getBucketId(), bucketInstance, serviceInstance, planToBucket,
-                                Boolean.TRUE, carryForwardBucket.getCurrentBalance(), bucketMap, qosProfileMap);
-
-                        List<BucketInstance> currentCFBucketsForIdList = existingCFBucketsByIdMap.get(planToBucket.getBucketId());
-                        Long totalCurrentCFAmount = bucketInstance.getCurrentBalance();
-
-                        if (currentCFBucketsForIdList != null) {
-                            for (BucketInstance existingCFBucket : currentCFBucketsForIdList) {
-                                totalCurrentCFAmount += existingCFBucket.getCurrentBalance();
-                            }
-
-                            for (BucketInstance currentCFBucketListForId : currentCFBucketsForIdList) {
-                                if (totalCurrentCFAmount < bucketInstance.getTotalCarryForward())
-                                    break;
-                                Long excess = totalCurrentCFAmount - bucketInstance.getTotalCarryForward();
-                                if (excess < currentCFBucketListForId.getCurrentBalance()) {
-                                    currentCFBucketListForId.setCurrentBalance(currentCFBucketListForId.getCurrentBalance() - excess);
-                                    updatesToSave.add(currentCFBucketListForId);
-                                    break;
-                                } else {
-                                    totalCurrentCFAmount -= currentCFBucketListForId.getCurrentBalance();
-                                    currentCFBucketListForId.setCurrentBalance(0L);
-                                    updatesToSave.add(currentCFBucketListForId);
-                                }
-                            }
-                        }
-
-                        newCarryForwardBucketList.add(bucketInstance);
+                    if (hasValidBalance(carryForwardBucket)) {
+                        processCarryForwardBucket(planToBucket, carryForwardBucket, serviceInstance,
+                            bucketMap, qosProfileMap, existingCFBucketsByIdMap,
+                            newCarryForwardBucketList, updatesToSave);
                     } else if (carryForwardBucket == null) {
                         log.error("Bucket Id: {} Bucket is not in current bucket list. Service Id: {}",
                                 planToBucket.getBucketId(), serviceId);
