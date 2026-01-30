@@ -56,25 +56,10 @@ public class RecurrentServiceService {
     private final QOSProfileRepository qosProfileRepository;
     private final BucketInstanceRepository bucketInstanceRepository;
 
-
+    //todo need to implemant getUserData using username and get  userSessionData.balance list and added all bucketList new created and save updateUserAndRelatedCaches
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    /**
-     * Batch process to reactivate recurring services that are due for the next cycle.
-     * Optimized with batch loading to eliminate N+1 queries.
-     * Filters services based on:
-     * - NEXT_CYCLE_START_DATE = Tomorrow
-     * - RECURRING_FLAG = true
-     * - EXPIRY_DATE is in the future (not expired)
-     * Processes services in chunks for better performance.
-     *
-     * PERFORMANCE OPTIMIZATIONS FOR 5M+ RECORDS:
-     * - Uses pagination to process in chunks (configurable via chunk-size)
-     * - Batch loading to eliminate N+1 queries
-     * - Explicit transaction management with timeout
-     * - Read operations optimized with proper fetch strategies
-     */
     @Transactional(timeout = 3600)  // 1 hour timeout for large batch processing
     public void reactivateExpiredRecurrentServices() {
         log.info("Reactivate expired recurrent services started..");
@@ -364,9 +349,7 @@ public class RecurrentServiceService {
             }
             bucketInstanceRepository.saveAll(bucketInstanceList);
             log.info("Saved {} bucket instances for Service Instance ID: {}",
-                    bucketInstanceList.size(), serviceInstance.getId());
-//            accountingCacheManagementService.syncBuckets(serviceInstance.getUsername(),serviceInstance.getStatus()
-//                    ,bucketInstanceList);
+                    bucketInstanceList.size(), serviceInstance.getId());//todo need to implement add bucketInstanceList
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {

@@ -1,18 +1,33 @@
 package com.axonect.aee.template.baseapp.domain.entities.dto;
 
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-/**
- * Session information for user
- */
+import java.time.LocalDateTime;
+
 @Getter
 @Setter
-@NoArgsConstructor
 @AllArgsConstructor
-@Builder
+@NoArgsConstructor
 public class Session {
     private String sessionId;
-    private String sessionStartTime;
-    private String sessionEndTime;
-    private String status;
+    private LocalDateTime sessionInitiatedTime;
+    private LocalDateTime sessionStartTime;
+    private String previousUsageBucketId;
+    private Integer sessionTime;
+    private Long previousTotalUsageQuotaValue;
+    private String framedId;
+    private String nasIp;
+    private String nasPortId;
+    private boolean isNewSession;
+    private long availableBalance;
+    private String groupId;
+    private String userName;
+    private String serviceId;
+    private String absoluteTimeOut;
+    private String userStatus;
+    private long userConcurrency;
+
 }

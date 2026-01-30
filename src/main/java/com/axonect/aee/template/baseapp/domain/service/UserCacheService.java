@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class UserCacheService {
 
-    private static final String KEY_PREFIX = "user:session:";
+    private static final String KEY_PREFIX = "user:";
     private static final String GROUP_KEY_PREFIX = "group:";
 
     private final RedisTemplate<String, String> redisTemplateString;
@@ -117,13 +117,9 @@ public class UserCacheService {
                         + userData.getUserStatus() + "," + userData.getSessionTimeOut();
 
                 // Execute both SET operations in parallel for better performance
-                CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() -> {
-                    redisTemplateString.opsForValue().set(userKey, jsonValue);
-                }, executorService);
+                CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
 
-                CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() -> {
-                    redisTemplateString.opsForValue().set(groupKey, groupValues);
-                }, executorService);
+                CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(groupKey, groupValues), executorService);
 
                 // Wait for both operations to complete with 8 second timeout
                 CompletableFuture.allOf(userFuture, groupFuture)
@@ -134,9 +130,7 @@ public class UserCacheService {
                 }
             } else {
                 // Only update user data
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    redisTemplateString.opsForValue().set(userKey, jsonValue);
-                }, executorService);
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
 
                 future.get(8, TimeUnit.SECONDS);
 

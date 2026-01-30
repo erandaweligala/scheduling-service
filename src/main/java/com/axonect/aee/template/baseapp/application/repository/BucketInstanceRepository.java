@@ -38,9 +38,6 @@ public interface BucketInstanceRepository extends JpaRepository<BucketInstance,L
 
     /**
      * Find expired bucket instances for deletion.
-     * OPTIMIZED FOR 10M+ RECORDS:
-     * - Uses composite index on (BUCKET_TYPE, EXPIRATION)
-     * - FIRST_ROWS hint for pagination efficiency
      */
     @Query(value = "SELECT /*+ INDEX(b idx_bucket_instance_expiration) FIRST_ROWS(100) */ " +
             "b.* FROM BUCKET_INSTANCE b WHERE b.EXPIRATION IS NOT NULL AND b.EXPIRATION < :today",
