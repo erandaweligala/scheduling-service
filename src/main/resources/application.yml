@@ -43,19 +43,29 @@ springdoc:
     path: /v3/api-docs
 
 spring:
-  # Redis Configuration
+  # High-Performance Redis Configuration with Lettuce (Reactive Client)
   data:
     redis:
       host: localhost
       port: 6379
       password:  # Set password if Redis requires authentication
-      timeout: 5000ms
-      jedis:
+      database: 0  # Redis database index
+      timeout: 10000ms  # Command timeout
+      connect-timeout: 10000ms  # Connection timeout
+      client-type: lettuce  # Use Lettuce instead of Jedis
+      lettuce:
         pool:
-          max-active: 50      # Maximum active connections in pool
-          max-idle: 20        # Maximum idle connections in pool
-          min-idle: 10        # Minimum idle connections in pool
-          max-wait: 2000ms    # Maximum time to wait for connection from pool
+          # Connection pool configuration for high performance
+          max-active: 100     # Maximum active connections in pool (increased for high throughput)
+          max-idle: 50        # Maximum idle connections in pool
+          min-idle: 20        # Minimum idle connections in pool (keep connections ready)
+          max-wait: 5000ms    # Maximum time to wait for connection from pool
+          time-between-eviction-runs: 60000ms  # Eviction thread run interval
+        shutdown-timeout: 100ms  # Graceful shutdown timeout
+        cluster:
+          refresh:
+            period: 60000ms  # Cluster topology refresh period (if using cluster)
+            adaptive: true   # Enable adaptive topology refresh
   cache:
     type: redis
     redis:

@@ -1,0 +1,228 @@
+package com.axonect.aee.template.baseapp.domain.service;
+
+import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
+import org.springframework.stereotype.Service;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * High-Performance User Cache Service using Lettuce
+ * Converted from Quarkus reactive to Spring Boot blocking operations
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class UserCacheService {
+
+    private static final String KEY_PREFIX = "user:session:";
+    private static final String GROUP_KEY_PREFIX = "group:";
+
+    private final RedisTemplate<String, String> redisTemplateString;
+    private final ObjectMapper objectMapper;
+
+    // Thread pool for parallel operations (optimized for high TPS)
+    private final ExecutorService executorService = Executors.newFixedThreadPool(
+            Runtime.getRuntime().availableProcessors() * 2
+    );
+
+    /**
+     * Get user data from Redis cache with retry and timeout
+     * Equivalent to Quarkus @Retry(maxRetries=1, delay=100, jitter=50) and @Timeout(5 seconds)
+     */
+    @Retryable(
+            maxAttempts = 2,  // maxRetries=1 means 1 retry + 1 original = 2 attempts
+            backoff = @Backoff(delay = 100, maxDelay = 150, random = true)  // delay=100, jitter=50
+    )
+    public UserSessionData getUserData(String userId) {
+        final long startTime = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+
+        if (log.isDebugEnabled()) {
+            log.debug("Retrieving user data for cache userId: {}", userId);
+        }
+
+        String key = KEY_PREFIX + userId;
+
+        try {
+            // Get from Redis with timeout (5 seconds as per original @Timeout)
+            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                return redisTemplateString.opsForValue().get(key);
+            }, executorService);
+
+            String json = future.get(5, TimeUnit.SECONDS);
+
+            if (json != null) {
+                try {
+                    UserSessionData userData = objectMapper.readValue(json, UserSessionData.class);
+
+                    if (log.isDebugEnabled()) {
+                        log.debug("User data retrieved for userId: {} in {} ms",
+                                userId, (System.currentTimeMillis() - startTime));
+                    }
+
+                    return userData;
+                } catch (Exception e) {
+                    log.error("Failed to deserialize user data for userId: {} - {}", userId, e.getMessage());
+                    throw new RuntimeException("Failed to deserialize user data", e);
+                }
+            }
+
+            if (log.isDebugEnabled()) {
+                log.debug("No user data found for userId: {}", userId);
+            }
+            return null;
+
+        } catch (java.util.concurrent.TimeoutException e) {
+            log.error("Timeout getting user data for userId: {}", userId, e);
+            throw new RuntimeException("Timeout getting user data for userId: " + userId, e);
+        } catch (Exception e) {
+            log.error("Failed to get user data for userId: {}", userId, e);
+            throw new RuntimeException("Failed to get user data for userId: " + userId, e);
+        }
+    }
+
+    /**
+     * Update user data and related caches in Redis
+     * Equivalent to Quarkus @Retry(maxRetries=1, delay=30, maxDuration=1500) and @Timeout(8 seconds)
+     */
+    @Retryable(
+            maxAttempts = 2,  // maxRetries=1 means 1 retry + 1 original = 2 attempts
+            backoff = @Backoff(delay = 30)
+    )
+    public void updateUserAndRelatedCaches(String userId, UserSessionData userData, String userName) {
+        if (log.isDebugEnabled()) {
+            log.debug("Updating user data and related caches for userId: {}", userId);
+        }
+
+        String userKey = KEY_PREFIX + userId;
+
+        try {
+            // Serialize user data to JSON
+            String jsonValue = objectMapper.writeValueAsString(userData);
+
+            // If groupId exists and is not "1", update both user and group data in parallel
+            if (userData != null && userData.getGroupId() != null
+                    && !userData.getGroupId().equalsIgnoreCase("1")) {
+
+                String groupKey = GROUP_KEY_PREFIX + userName;
+                String groupValues = userData.getGroupId() + "," + userData.getConcurrency() + ","
+                        + userData.getUserStatus() + "," + userData.getSessionTimeOut();
+
+                // Execute both SET operations in parallel for better performance
+                CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() -> {
+                    redisTemplateString.opsForValue().set(userKey, jsonValue);
+                }, executorService);
+
+                CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() -> {
+                    redisTemplateString.opsForValue().set(groupKey, groupValues);
+                }, executorService);
+
+                // Wait for both operations to complete with 8 second timeout
+                CompletableFuture.allOf(userFuture, groupFuture)
+                        .get(8, TimeUnit.SECONDS);
+
+                if (log.isDebugEnabled()) {
+                    log.debug("Updated user and group cache for userId: {}", userId);
+                }
+            } else {
+                // Only update user data
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                    redisTemplateString.opsForValue().set(userKey, jsonValue);
+                }, executorService);
+
+                future.get(8, TimeUnit.SECONDS);
+
+                if (log.isDebugEnabled()) {
+                    log.debug("Updated user cache for userId: {}", userId);
+                }
+            }
+
+        } catch (java.util.concurrent.TimeoutException e) {
+            log.error("Timeout updating cache for user: {}", userId, e);
+            throw new RuntimeException("Timeout updating cache for user: " + userId, e);
+        } catch (Exception e) {
+            log.error("Failed to update cache for user: {}", userId, e);
+            throw new RuntimeException("Failed to serialize or update user data for userId: " + userId, e);
+        }
+    }
+
+    /**
+     * Get group data from Redis
+     */
+    @Retryable(maxAttempts = 2, backoff = @Backoff(delay = 100))
+    public String getGroupData(String userName) {
+        String groupKey = GROUP_KEY_PREFIX + userName;
+        try {
+            return redisTemplateString.opsForValue().get(groupKey);
+        } catch (Exception e) {
+            log.error("Failed to get group data for userName: {}", userName, e);
+            throw new RuntimeException("Failed to get group data for userName: " + userName, e);
+        }
+    }
+
+    /**
+     * Delete user data from cache
+     */
+    @Retryable(maxAttempts = 2, backoff = @Backoff(delay = 50))
+    public void deleteUserData(String userId) {
+        String userKey = KEY_PREFIX + userId;
+        try {
+            redisTemplateString.delete(userKey);
+            log.debug("Deleted user data for userId: {}", userId);
+        } catch (Exception e) {
+            log.error("Failed to delete user data for userId: {}", userId, e);
+            throw new RuntimeException("Failed to delete user data for userId: " + userId, e);
+        }
+    }
+
+    /**
+     * Delete group data from cache
+     */
+    @Retryable(maxAttempts = 2, backoff = @Backoff(delay = 50))
+    public void deleteGroupData(String userName) {
+        String groupKey = GROUP_KEY_PREFIX + userName;
+        try {
+            redisTemplateString.delete(groupKey);
+            log.debug("Deleted group data for userName: {}", userName);
+        } catch (Exception e) {
+            log.error("Failed to delete group data for userName: {}", userName, e);
+            throw new RuntimeException("Failed to delete group data for userName: " + userName, e);
+        }
+    }
+
+    /**
+     * Check if user data exists in cache
+     */
+    public boolean userDataExists(String userId) {
+        String userKey = KEY_PREFIX + userId;
+        try {
+            return Boolean.TRUE.equals(redisTemplateString.hasKey(userKey));
+        } catch (Exception e) {
+            log.error("Failed to check user data existence for userId: {}", userId, e);
+            return false;
+        }
+    }
+
+    /**
+     * Cleanup method to shutdown executor service gracefully
+     */
+    public void shutdown() {
+        try {
+            executorService.shutdown();
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+}

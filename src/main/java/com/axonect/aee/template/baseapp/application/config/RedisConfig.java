@@ -4,27 +4,158 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.lettuce.core.ClientOptions;
+import io.lettuce.core.SocketOptions;
+import io.lettuce.core.TimeoutOptions;
+import io.lettuce.core.protocol.ProtocolVersion;
+import io.lettuce.core.resource.ClientResources;
+import io.lettuce.core.resource.DefaultClientResources;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.data.redis.RedisProperties;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.lettuce.LettucePoolingClientConfiguration;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * High-Performance Redis Configuration using Lettuce Client
+ * Optimized for high-throughput blocking operations
+ */
 @Configuration
 @EnableCaching
+@EnableRetry
 @Slf4j
 public class RedisConfig {
+
+    private final RedisProperties redisProperties;
+
+    public RedisConfig(RedisProperties redisProperties) {
+        this.redisProperties = redisProperties;
+    }
+
+    /**
+     * Configure Lettuce Client Resources for optimal performance
+     * Manages I/O threads and computation threads
+     */
+    @Bean(destroyMethod = "shutdown")
+    public ClientResources lettuceClientResources() {
+        log.info("Configuring Lettuce ClientResources for high-performance Redis operations");
+        return DefaultClientResources.builder()
+                .ioThreadPoolSize(4)  // Number of I/O threads (typically CPU cores)
+                .computationThreadPoolSize(4)  // Number of computation threads
+                .build();
+    }
+
+    /**
+     * Configure Lettuce Client Options with performance optimizations
+     */
+    @Bean
+    public ClientOptions lettuceClientOptions() {
+        log.info("Configuring Lettuce ClientOptions with performance optimizations");
+
+        SocketOptions socketOptions = SocketOptions.builder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .keepAlive(true)
+                .tcpNoDelay(true)  // Disable Nagle's algorithm for lower latency
+                .build();
+
+        TimeoutOptions timeoutOptions = TimeoutOptions.enabled(Duration.ofSeconds(10));
+
+        return ClientOptions.builder()
+                .socketOptions(socketOptions)
+                .timeoutOptions(timeoutOptions)
+                .protocolVersion(ProtocolVersion.RESP3)  // Use RESP3 protocol for better performance
+                .autoReconnect(true)
+                .cancelCommandsOnReconnectFailure(false)
+                .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
+                .publishOnScheduler(true)  // Use dedicated scheduler for pub/sub
+                .build();
+    }
+
+    /**
+     * Configure Connection Pool for high-performance operations
+     */
+    @Bean
+    public GenericObjectPoolConfig<?> lettucePoolConfig() {
+        log.info("Configuring Lettuce connection pool for high concurrency");
+
+        GenericObjectPoolConfig<?> poolConfig = new GenericObjectPoolConfig<>();
+        RedisProperties.Pool pool = redisProperties.getLettuce().getPool();
+
+        poolConfig.setMaxTotal(pool.getMaxActive());
+        poolConfig.setMaxIdle(pool.getMaxIdle());
+        poolConfig.setMinIdle(pool.getMinIdle());
+        poolConfig.setMaxWait(pool.getMaxWait());
+
+        // Performance optimizations
+        poolConfig.setTestOnBorrow(true);
+        poolConfig.setTestOnReturn(false);
+        poolConfig.setTestWhileIdle(true);
+        poolConfig.setTimeBetweenEvictionRuns(Duration.ofSeconds(60));
+        poolConfig.setMinEvictableIdleTime(Duration.ofMinutes(5));
+        poolConfig.setBlockWhenExhausted(true);
+        poolConfig.setJmxEnabled(false);
+
+        log.info("Pool config: maxTotal={}, maxIdle={}, minIdle={}",
+                poolConfig.getMaxTotal(), poolConfig.getMaxIdle(), poolConfig.getMinIdle());
+
+        return poolConfig;
+    }
+
+    /**
+     * Configure High-Performance Lettuce Connection Factory
+     * This replaces Jedis with Lettuce for better performance and pooling
+     */
+    @Bean
+    public LettuceConnectionFactory redisConnectionFactory(
+            ClientResources clientResources,
+            ClientOptions clientOptions,
+            GenericObjectPoolConfig<?> poolConfig) {
+
+        log.info("Configuring high-performance LettuceConnectionFactory");
+        log.info("Redis host: {}, port: {}", redisProperties.getHost(), redisProperties.getPort());
+
+        // Redis standalone configuration
+        RedisStandaloneConfiguration redisConfig = new RedisStandaloneConfiguration();
+        redisConfig.setHostName(redisProperties.getHost());
+        redisConfig.setPort(redisProperties.getPort());
+
+        if (redisProperties.getPassword() != null && !redisProperties.getPassword().isEmpty()) {
+            redisConfig.setPassword(redisProperties.getPassword());
+        }
+
+        // Lettuce client configuration with pooling
+        LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
+                .clientOptions(clientOptions)
+                .clientResources(clientResources)
+                .poolConfig(poolConfig)
+                .commandTimeout(redisProperties.getTimeout())
+                .build();
+
+        LettuceConnectionFactory factory = new LettuceConnectionFactory(redisConfig, clientConfig);
+        factory.setShareNativeConnection(false);  // Don't share connections for better concurrency
+        factory.setValidateConnection(true);
+
+        log.info("LettuceConnectionFactory configured successfully");
+        return factory;
+    }
 
     /**
      * Configure Redis cache manager with custom TTL settings for different caches.
@@ -126,6 +257,28 @@ public class RedisConfig {
         // Use JSON serializer for values
         template.setValueSerializer(serializer);
         template.setHashValueSerializer(serializer);
+
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    /**
+     * Configure RedisTemplate for String-to-String operations
+     * Used by UserCacheService for high-performance user session caching
+     */
+    @Bean
+    public RedisTemplate<String, String> redisTemplateString(RedisConnectionFactory connectionFactory) {
+        log.info("Initializing RedisTemplate<String, String> for string operations");
+
+        RedisTemplate<String, String> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+
+        // Use String serializer for both keys and values
+        StringRedisSerializer stringSerializer = new StringRedisSerializer();
+        template.setKeySerializer(stringSerializer);
+        template.setValueSerializer(stringSerializer);
+        template.setHashKeySerializer(stringSerializer);
+        template.setHashValueSerializer(stringSerializer);
 
         template.afterPropertiesSet();
         return template;
