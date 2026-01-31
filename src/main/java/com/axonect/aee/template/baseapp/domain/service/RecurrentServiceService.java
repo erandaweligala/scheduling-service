@@ -331,11 +331,21 @@ public class RecurrentServiceService {
             }
             log.debug("Found {} quota details for Plan ID: {}", quotaDetails.size(), serviceInstance.getPlanId());
 
+            // Collect all bucket instances from both new and carry-forward provisioning
+            List<BucketInstance> allNewBuckets = new ArrayList<>();
+
             log.debug("Performing new quota provision for Service Instance ID: {}", serviceInstance.getId());
-            newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            List<BucketInstance> newBuckets = newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            allNewBuckets.addAll(newBuckets);
 
             log.debug("Performing carry forward provision for Service Instance ID: {}", serviceInstance.getId());
-            createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            allNewBuckets.addAll(carryForwardBuckets);
+
+            // Update user cache once with all newly created bucket instances
+            if (!allNewBuckets.isEmpty()) {
+                updateUserCacheWithBuckets(serviceInstance.getUsername(), allNewBuckets, serviceInstance);
+            }
 
         } catch (AAAException ex) {
             throw ex;
@@ -346,7 +356,7 @@ public class RecurrentServiceService {
     }
 
 
-    private void newQuotaProvisionOptimized(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance,
+    private List<BucketInstance> newQuotaProvisionOptimized(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance,
                                             Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
         log.debug("Starting optimized new quota provision for Service Instance ID: {}, Quota count: {}",
                 serviceInstance.getId(), quotaDetails.size());
@@ -363,8 +373,7 @@ public class RecurrentServiceService {
             log.info("Saved {} bucket instances for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
 
-            // Update user cache with newly created bucket instances
-            updateUserCacheWithBuckets(serviceInstance.getUsername(), bucketInstanceList, serviceInstance);
+            return bucketInstanceList;
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -561,7 +570,7 @@ public class RecurrentServiceService {
             && bucket.getCurrentBalance() != 0L;
     }
 
-    private void createCarryForwardBucketsOptimized(List<BucketInstance> currentBucketInstanceList,
+    private List<BucketInstance> createCarryForwardBucketsOptimized(List<BucketInstance> currentBucketInstanceList,
                                                     List<PlanToBucket> quotaDetails,
                                                     ServiceInstance serviceInstance,
                                                     Map<String, Bucket> bucketMap,
@@ -604,10 +613,7 @@ public class RecurrentServiceService {
             log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
-            // Update user cache with newly created carry-forward bucket instances
-            if (!newCarryForwardBucketList.isEmpty()) {
-                updateUserCacheWithBuckets(serviceInstance.getUsername(), newCarryForwardBucketList, serviceInstance);
-            }
+            return newCarryForwardBucketList;
 
         } catch (AAAException ex) {
             throw ex;
@@ -626,8 +632,6 @@ public class RecurrentServiceService {
      * @param newBucketInstances List of newly created bucket instances to add to cache
      * @param serviceInstance ServiceInstance for getting service details
      */
-
-    //todo need be newQuotaProvisionOptimized and createCarryForwardBucketsOptimized buckets cache save onetime no need twice
     private void updateUserCacheWithBuckets(String username, List<BucketInstance> newBucketInstances,
                                             ServiceInstance serviceInstance) {
         log.debug("Updating user cache with {} new bucket instances for username: {}",
