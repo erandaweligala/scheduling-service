@@ -24,6 +24,7 @@ import com.axonect.aee.template.baseapp.domain.util.LogMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -64,6 +65,7 @@ public class RecurrentServiceService {
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
     // Self-injection to enable transactional method calls via proxy
+    @Lazy
     private final RecurrentServiceService self;
 
     @Value("${recurrent-service.chunk-size}")
