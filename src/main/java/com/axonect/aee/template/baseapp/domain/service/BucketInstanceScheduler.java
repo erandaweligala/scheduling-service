@@ -3,6 +3,7 @@ package com.axonect.aee.template.baseapp.domain.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +21,7 @@ public class BucketInstanceScheduler {
     private final UserCacheService userCacheService;
     private final ExpiryNotificationService expiryNotificationService;
 
+    @Lazy
     private final BucketInstanceScheduler self;
 
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
