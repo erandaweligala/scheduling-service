@@ -9,10 +9,12 @@ import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * High-Performance User Cache Service using Lettuce
@@ -105,6 +107,9 @@ public class UserCacheService {
         String userKey = KEY_PREFIX + userId;
 
         try {
+            // Remove expired balance elements before saving to Redis
+            removeExpiredBalanceElements(userData);
+
             // Serialize user data to JSON
             String jsonValue = objectMapper.writeValueAsString(userData);
 
@@ -202,6 +207,54 @@ public class UserCacheService {
         } catch (Exception e) {
             log.error("Failed to check user data existence for userId: {}", userId, e);
             return false;
+        }
+    }
+
+    /**
+     * Removes expired balance elements from user session data
+     * Removes balance elements where:
+     * - bucketExpiryDate is before yesterday (expired more than 1 day ago)
+     * - quota is 0
+     * - isUnlimited is false (not an unlimited bucket)
+     *
+     * @param userData User session data to clean up
+     */
+    private void removeExpiredBalanceElements(UserSessionData userData) {
+        if (userData == null || userData.getBalance() == null || userData.getBalance().isEmpty()) {
+            return;
+        }
+
+        LocalDateTime oneDayAgo = LocalDateTime.now().minusDays(1);
+        int originalSize = userData.getBalance().size();
+
+        // Filter out balance elements that meet the removal criteria
+        var filteredBalances = userData.getBalance().stream()
+                .filter(balance -> {
+                    // Keep the balance if any of these conditions is true:
+                    // 1. It's an unlimited bucket
+                    // 2. It has remaining quota
+                    // 3. The bucket expiry date is within the last day (not expired more than 1 day ago)
+                    boolean shouldKeep = balance.isUnlimited()
+                            || balance.getQuota() == null
+                            || balance.getQuota() != 0L
+                            || balance.getBucketExpiryDate() == null
+                            || balance.getBucketExpiryDate().isAfter(oneDayAgo);
+
+                    if (!shouldKeep && log.isDebugEnabled()) {
+                        log.debug("Removing expired balance element - BucketId: {}, Quota: {}, ExpiryDate: {}, isUnlimited: {}",
+                                balance.getBucketId(), balance.getQuota(),
+                                balance.getBucketExpiryDate(), balance.isUnlimited());
+                    }
+
+                    return shouldKeep;
+                })
+                .collect(Collectors.toList());
+
+        int removedCount = originalSize - filteredBalances.size();
+        if (removedCount > 0) {
+            userData.setBalance(filteredBalances);
+            log.info("Removed {} expired balance elements from user session data. Remaining: {}",
+                    removedCount, filteredBalances.size());
         }
     }
 
