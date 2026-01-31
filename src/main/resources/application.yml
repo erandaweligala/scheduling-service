@@ -133,6 +133,27 @@ recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
 delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 
+# Expiry Notification Configuration
+expiry-notification:
+  batch-size: 100                              # Number of bucket instances to process per batch
+  schedule: "0 0 9 * * ?"                      # Run daily at 9:00 AM
+
+# Kafka Configuration for Bucket Expiry Notifications
+spring.kafka:
+  bootstrap-servers: localhost:9092            # Kafka broker addresses (comma-separated for cluster)
+  producer:
+    retries: 3                                 # Number of retries for failed sends
+    acks: all                                  # Wait for all replicas to acknowledge (strongest guarantee)
+    batch-size: 16384                          # Batch size in bytes (16KB default)
+    linger-ms: 10                              # Wait up to 10ms to batch messages
+    buffer-memory: 33554432                    # Total buffer memory (32MB)
+    key-serializer: org.apache.kafka.common.serialization.StringSerializer
+    value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+# Kafka Topic Names
+kafka.topic:
+  bucket-expiry-notification: bucket-expiry-notifications  # Topic for bucket expiry notifications
+
 # Cache API Configuration
 cache.api.connect-timeout: 5000         # Connection timeout in milliseconds
 cache.api.read-timeout: 10              # Read timeout in seconds
