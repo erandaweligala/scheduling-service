@@ -172,6 +172,12 @@
           <artifactId>spring-aspects</artifactId>
       </dependency>
 
+      <!-- Kafka Support for event-driven notifications -->
+      <dependency>
+          <groupId>org.springframework.kafka</groupId>
+          <artifactId>spring-kafka</artifactId>
+      </dependency>
+
   </dependencies>
   <repositories>
     <repository>

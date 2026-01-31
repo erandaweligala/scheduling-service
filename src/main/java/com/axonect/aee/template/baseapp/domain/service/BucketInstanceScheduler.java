@@ -17,6 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 public class BucketInstanceScheduler {
 
     private final DeleteBucketInstanceService deleteBucketInstanceService;
+    private final UserCacheService userCacheService;
+    private final ExpiryNotificationService expiryNotificationService;
+
     private final BucketInstanceScheduler self;
 
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
@@ -25,7 +28,10 @@ public class BucketInstanceScheduler {
         try {
             self.deleteExpiredBucketsTransactional();
             log.info("Successfully completed scheduled deletion of expired bucket instances");
+
+            // Clear user cache data after deleting expired buckets to maintain cache consistency
             log.info("Clearing user caches with bucket expiry data");
+            userCacheService.clearAllUserCaches();
             log.info("Successfully cleared user caches with bucket expiry data");
         } catch (Exception e) {
             log.error("Error during scheduled deletion of expired bucket instances", e);
@@ -39,5 +45,26 @@ public class BucketInstanceScheduler {
     @Transactional
     public void deleteExpiredBucketsTransactional() {
         deleteBucketInstanceService.deleteExpiredBucketInstance();
+    }
+
+    /**
+     * Scheduled job to process and send bucket expiry notifications via Kafka.
+     * Runs daily to check for buckets that will expire based on configured DAYS_TO_EXPIRE templates.
+     *
+     * Example: If a template has DAYS_TO_EXPIRE = 2 and today is 2026-01-28,
+     * this will send notifications for all buckets expiring on 2026-01-30.
+     *
+     * Default schedule: 9:00 AM daily (configurable via application.yml)
+     */
+    @Scheduled(cron = "${expiry-notification.schedule:0 0 9 * * ?}")
+    public void scheduleExpiryNotifications() {
+        log.info("Starting scheduled expiry notification processing");
+        try {
+            int notificationsSent = expiryNotificationService.processExpiryNotifications();
+            log.info("Successfully completed expiry notification processing. Total notifications sent: {}",
+                    notificationsSent);
+        } catch (Exception e) {
+            log.error("Error during scheduled expiry notification processing", e);
+        }
     }
 }
