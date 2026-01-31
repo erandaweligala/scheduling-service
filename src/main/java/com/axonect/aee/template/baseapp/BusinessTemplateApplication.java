@@ -30,6 +30,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.util.StringUtils;
 
 import java.net.InetAddress;
@@ -42,6 +43,7 @@ import java.util.List;
 @DependsOn({"dteLoggingUtils"})
 @Import({PrometheusScrapeEndpoint.class, CollectorRegistry.class})
 @EnableDtePlugins
+@EnableScheduling
 public class BusinessTemplateApplication {
     private static final Logger logger = LoggingUtils.getLogger(BusinessTemplateApplication.class.getName());
 
