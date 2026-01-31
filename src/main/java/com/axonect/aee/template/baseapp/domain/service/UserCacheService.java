@@ -219,6 +219,7 @@ public class UserCacheService {
      *
      * @param userData User session data to clean up
      */
+
     private void removeExpiredBalanceElements(UserSessionData userData) {
         if (userData == null || userData.getBalance() == null || userData.getBalance().isEmpty()) {
             return;
@@ -230,15 +231,8 @@ public class UserCacheService {
         // Filter out balance elements that meet the removal criteria
         var filteredBalances = userData.getBalance().stream()
                 .filter(balance -> {
-                    // Keep the balance if any of these conditions is true:
-                    // 1. It's an unlimited bucket
-                    // 2. It has remaining quota
-                    // 3. The bucket expiry date is within the last day (not expired more than 1 day ago)
-                    boolean shouldKeep = balance.isUnlimited()
-                            || balance.getQuota() == null
-                            || balance.getQuota() != 0L
-                            || balance.getBucketExpiryDate() == null
-                            || balance.getBucketExpiryDate().isAfter(oneDayAgo);
+
+                    boolean shouldKeep = balance.getBucketExpiryDate().isAfter(oneDayAgo);
 
                     if (!shouldKeep && log.isDebugEnabled()) {
                         log.debug("Removing expired balance element - BucketId: {}, Quota: {}, ExpiryDate: {}, isUnlimited: {}",
@@ -262,40 +256,8 @@ public class UserCacheService {
      * Clear all user cache data containing bucket expiry information.
      * This is typically called after scheduled deletion of expired buckets
      * to ensure cache consistency with the database.
-     *
      * Uses Redis SCAN to efficiently iterate through all user keys and delete them.
      */
-    @Retryable(maxAttempts = 2, backoff = @Backoff(delay = 100))
-    public void clearAllUserCaches() {
-        log.info("Starting to clear all user caches with bucket expiry data");
-
-        try {
-            String pattern = KEY_PREFIX + "*";
-            long deletedCount = 0;
-
-            // Use SCAN to safely iterate through keys without blocking Redis
-            var cursor = redisTemplateString.scan(
-                org.springframework.data.redis.core.ScanOptions.scanOptions()
-                    .match(pattern)
-                    .count(100) // Fetch 100 keys at a time
-                    .build()
-            );
-
-            while (cursor.hasNext()) {
-                String key = cursor.next();
-                redisTemplateString.delete(key);
-                deletedCount++;
-            }
-
-            cursor.close();
-
-            log.info("Successfully cleared {} user cache entries", deletedCount);
-
-        } catch (Exception e) {
-            log.error("Failed to clear user caches", e);
-            throw new RuntimeException("Failed to clear user caches", e);
-        }
-    }
 
     /**
      * Cleanup method to shutdown executor service gracefully

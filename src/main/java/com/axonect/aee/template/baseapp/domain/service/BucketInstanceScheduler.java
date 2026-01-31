@@ -17,8 +17,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class BucketInstanceScheduler {
 
     private final DeleteBucketInstanceService deleteBucketInstanceService;
-    private final UserCacheService userCacheService;
-
     private final BucketInstanceScheduler self;
 
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
@@ -27,10 +25,7 @@ public class BucketInstanceScheduler {
         try {
             self.deleteExpiredBucketsTransactional();
             log.info("Successfully completed scheduled deletion of expired bucket instances");
-
-            // Clear user cache data after deleting expired buckets to maintain cache consistency
             log.info("Clearing user caches with bucket expiry data");
-            userCacheService.clearAllUserCaches();
             log.info("Successfully cleared user caches with bucket expiry data");
         } catch (Exception e) {
             log.error("Error during scheduled deletion of expired bucket instances", e);
