@@ -161,71 +161,75 @@ public class RedisConfig {
      * Configure Redis cache manager with custom TTL settings for different caches.
      * This allows different cache types to have different expiration times.
      */
-//    @Bean
-//    public CacheManager cacheManager(RedisConnectionFactory connectionFactory) {
-//        log.info("Initializing Redis Cache Manager with custom configurations");
-//
-//        // Create ObjectMapper for JSON serialization with Java 8 time support
-//        ObjectMapper objectMapper = new ObjectMapper();
-//        objectMapper.registerModule(new JavaTimeModule());
-//
-//        // Enable polymorphic type handling for proper deserialization
-//        objectMapper.activateDefaultTyping(
-//                BasicPolymorphicTypeValidator.builder()
-//                        .allowIfBaseType(Object.class)
-//                        .build(),
-//                ObjectMapper.DefaultTyping.NON_FINAL,
-//                JsonTypeInfo.As.PROPERTY
-//        );
-//
-//        GenericJackson2JsonRedisSerializer serializer = new GenericJackson2JsonRedisSerializer(objectMapper);
-//
-//        // Default cache configuration (1 hour TTL)
-//        RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
-//                .entryTtl(Duration.ofHours(1))
-//                .disableCachingNullValues()
-//                .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
-//                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(serializer));
-//
-//        // Custom cache configurations for different cache types
-//        Map<String, RedisCacheConfiguration> cacheConfigurations = new HashMap<>();
-//
-//        // Plans cache - 6 hours (plans don't change frequently)
-//        cacheConfigurations.put("plans",
-//                defaultConfig.entryTtl(Duration.ofHours(6)));
-//
-//        // Buckets cache - 6 hours (bucket definitions are relatively static)
-//        cacheConfigurations.put("buckets",
-//                defaultConfig.entryTtl(Duration.ofHours(6)));
-//
-//        // QOS Profiles cache - 12 hours (QOS profiles rarely change)
-//        cacheConfigurations.put("qosProfiles",
-//                defaultConfig.entryTtl(Duration.ofHours(12)));
-//
-//        // Users cache - 30 minutes (user data may change more frequently)
-//        cacheConfigurations.put("users",
-//                defaultConfig.entryTtl(Duration.ofMinutes(30)));
-//
-//        // Plan to Bucket mapping cache - 6 hours
-//        cacheConfigurations.put("planToBuckets",
-//                defaultConfig.entryTtl(Duration.ofHours(6)));
-//
-//        // Service instances cache - 15 minutes (more dynamic data)
-//        cacheConfigurations.put("serviceInstances",
-//                defaultConfig.entryTtl(Duration.ofMinutes(15)));
-//
-//        // Bucket instances cache - 5 minutes (very dynamic data)
-//        cacheConfigurations.put("bucketInstances",
-//                defaultConfig.entryTtl(Duration.ofMinutes(5)));
-//
-//        log.info("Configured {} custom cache regions with varying TTLs", cacheConfigurations.size());
-//
-//        return RedisCacheManager.builder(connectionFactory)
-//                .cacheDefaults(defaultConfig)
-//                .withInitialCacheConfigurations(cacheConfigurations)
-//                .transactionAware()
-//                .build();
-//    }
+    @Bean
+    public CacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+        log.info("Initializing Redis Cache Manager with custom configurations");
+
+        // Create ObjectMapper for JSON serialization with Java 8 time support
+        ObjectMapper objectMapper = new ObjectMapper();
+        objectMapper.registerModule(new JavaTimeModule());
+
+        // Enable polymorphic type handling for proper deserialization
+        objectMapper.activateDefaultTyping(
+                BasicPolymorphicTypeValidator.builder()
+                        .allowIfBaseType(Object.class)
+                        .build(),
+                ObjectMapper.DefaultTyping.NON_FINAL,
+                JsonTypeInfo.As.PROPERTY
+        );
+
+        GenericJackson2JsonRedisSerializer serializer = new GenericJackson2JsonRedisSerializer(objectMapper);
+
+        // Default cache configuration (1 hour TTL)
+        RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
+                .entryTtl(Duration.ofHours(1))
+                .disableCachingNullValues()
+                .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(serializer));
+
+        // Custom cache configurations for different cache types
+        Map<String, RedisCacheConfiguration> cacheConfigurations = new HashMap<>();
+
+        // Plans cache - 6 hours (plans don't change frequently)
+        cacheConfigurations.put("plans",
+                defaultConfig.entryTtl(Duration.ofHours(6)));
+
+        // Buckets cache - 6 hours (bucket definitions are relatively static)
+        cacheConfigurations.put("buckets",
+                defaultConfig.entryTtl(Duration.ofHours(6)));
+
+        // QOS Profiles cache - 12 hours (QOS profiles rarely change)
+        cacheConfigurations.put("qosProfiles",
+                defaultConfig.entryTtl(Duration.ofHours(12)));
+
+        // Users cache - 30 minutes (user data may change more frequently)
+        cacheConfigurations.put("users",
+                defaultConfig.entryTtl(Duration.ofMinutes(30)));
+
+        // Plan to Bucket mapping cache - 6 hours
+        cacheConfigurations.put("planToBuckets",
+                defaultConfig.entryTtl(Duration.ofHours(6)));
+
+        // Service instances cache - 15 minutes (more dynamic data)
+        cacheConfigurations.put("serviceInstances",
+                defaultConfig.entryTtl(Duration.ofMinutes(15)));
+
+        // Bucket instances cache - 5 minutes (very dynamic data)
+        cacheConfigurations.put("bucketInstances",
+                defaultConfig.entryTtl(Duration.ofMinutes(5)));
+
+        // Child templates cache - 6 hours (template configurations rarely change)
+        cacheConfigurations.put("childTemplates",
+                defaultConfig.entryTtl(Duration.ofHours(6)));
+
+        log.info("Configured {} custom cache regions with varying TTLs", cacheConfigurations.size());
+
+        return RedisCacheManager.builder(connectionFactory)
+                .cacheDefaults(defaultConfig)
+                .withInitialCacheConfigurations(cacheConfigurations)
+                .transactionAware()
+                .build();
+    }
 
     /**
      * Configure RedisTemplate for manual cache operations if needed.

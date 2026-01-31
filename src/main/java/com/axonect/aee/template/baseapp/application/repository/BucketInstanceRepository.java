@@ -45,4 +45,23 @@ public interface BucketInstanceRepository extends JpaRepository<BucketInstance,L
             "COUNT(*) FROM BUCKET_INSTANCE b WHERE b.EXPIRATION IS NOT NULL AND b.EXPIRATION < :today",
             nativeQuery = true)
     Page<BucketInstance> findExpiredBuckets(@Param("today") LocalDateTime today, Pageable pageable);
+
+    /**
+     * Find bucket instances expiring within a specific date range.
+     * Used for expiry notification processing.
+     *
+     * @param startDate start of date range (inclusive)
+     * @param endDate end of date range (exclusive)
+     * @param pageable pagination information
+     * @return page of bucket instances expiring in the date range
+     */
+    @Query(value = "SELECT /*+ INDEX(b idx_bucket_instance_expiration) FIRST_ROWS(100) */ " +
+            "b.* FROM BUCKET_INSTANCE b WHERE b.EXPIRATION >= :startDate AND b.EXPIRATION < :endDate",
+            countQuery = "SELECT /*+ INDEX(b idx_bucket_instance_expiration) */ " +
+            "COUNT(*) FROM BUCKET_INSTANCE b WHERE b.EXPIRATION >= :startDate AND b.EXPIRATION < :endDate",
+            nativeQuery = true)
+    Page<BucketInstance> findBucketsExpiringBetween(
+            @Param("startDate") LocalDateTime startDate,
+            @Param("endDate") LocalDateTime endDate,
+            Pageable pageable);
 }
