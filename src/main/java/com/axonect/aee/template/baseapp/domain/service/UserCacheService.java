@@ -259,6 +259,45 @@ public class UserCacheService {
     }
 
     /**
+     * Clear all user cache data containing bucket expiry information.
+     * This is typically called after scheduled deletion of expired buckets
+     * to ensure cache consistency with the database.
+     *
+     * Uses Redis SCAN to efficiently iterate through all user keys and delete them.
+     */
+    @Retryable(maxAttempts = 2, backoff = @Backoff(delay = 100))
+    public void clearAllUserCaches() {
+        log.info("Starting to clear all user caches with bucket expiry data");
+
+        try {
+            String pattern = KEY_PREFIX + "*";
+            long deletedCount = 0;
+
+            // Use SCAN to safely iterate through keys without blocking Redis
+            var cursor = redisTemplateString.scan(
+                org.springframework.data.redis.core.ScanOptions.scanOptions()
+                    .match(pattern)
+                    .count(100) // Fetch 100 keys at a time
+                    .build()
+            );
+
+            while (cursor.hasNext()) {
+                String key = cursor.next();
+                redisTemplateString.delete(key);
+                deletedCount++;
+            }
+
+            cursor.close();
+
+            log.info("Successfully cleared {} user cache entries", deletedCount);
+
+        } catch (Exception e) {
+            log.error("Failed to clear user caches", e);
+            throw new RuntimeException("Failed to clear user caches", e);
+        }
+    }
+
+    /**
      * Cleanup method to shutdown executor service gracefully
      */
     public void shutdown() {

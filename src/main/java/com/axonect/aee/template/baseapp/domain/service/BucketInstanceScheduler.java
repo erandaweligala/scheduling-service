@@ -17,17 +17,21 @@ import org.springframework.transaction.annotation.Transactional;
 public class BucketInstanceScheduler {
 
     private final DeleteBucketInstanceService deleteBucketInstanceService;
-
+    private final UserCacheService userCacheService;
 
     private final BucketInstanceScheduler self;
 
-    //todo need to set clear balance bucketExpiryDate  cache data
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
     public void scheduleDeleteExpiredBuckets() {
         log.info("Starting scheduled deletion of expired bucket instances");
         try {
             self.deleteExpiredBucketsTransactional();
             log.info("Successfully completed scheduled deletion of expired bucket instances");
+
+            // Clear user cache data after deleting expired buckets to maintain cache consistency
+            log.info("Clearing user caches with bucket expiry data");
+            userCacheService.clearAllUserCaches();
+            log.info("Successfully cleared user caches with bucket expiry data");
         } catch (Exception e) {
             log.error("Error during scheduled deletion of expired bucket instances", e);
         }
