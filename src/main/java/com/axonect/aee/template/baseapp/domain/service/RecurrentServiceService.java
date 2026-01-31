@@ -156,7 +156,7 @@ public class RecurrentServiceService {
 
                 try {
                     // Each service is processed in its own independent transaction
-                    processServiceInstanceInTransaction(
+                    self.processServiceInstanceInTransaction(
                             serviceInstance,
                             user,
                             plan,
