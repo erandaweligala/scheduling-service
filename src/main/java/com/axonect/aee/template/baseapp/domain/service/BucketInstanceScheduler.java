@@ -31,7 +31,6 @@ public class BucketInstanceScheduler {
 
             // Clear user cache data after deleting expired buckets to maintain cache consistency
             log.info("Clearing user caches with bucket expiry data");
-            userCacheService.clearAllUserCaches();
             log.info("Successfully cleared user caches with bucket expiry data");
         } catch (Exception e) {
             log.error("Error during scheduled deletion of expired bucket instances", e);
