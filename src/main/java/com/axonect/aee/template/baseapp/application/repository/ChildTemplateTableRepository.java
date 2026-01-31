@@ -1,7 +1,6 @@
 package com.axonect.aee.template.baseapp.application.repository;
 
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
@@ -10,19 +9,16 @@ import java.util.List;
 
 /**
  * Repository for managing ChildTemplateTable entities
- * Supports caching for better performance since templates rarely change
  */
 @Repository
 public interface ChildTemplateTableRepository extends JpaRepository<ChildTemplateTable, Long> {
 
     /**
      * Find all templates by message type
-     * Cached for 6 hours since template configurations rarely change
      *
      * @param messageType the type of message (e.g., "EXPIRE", "QUOTA")
      * @return list of templates matching the message type
      */
-    @Cacheable(value = "childTemplates", key = "#messageType")
     List<ChildTemplateTable> findByMessageType(String messageType);
 
     /**
@@ -42,6 +38,5 @@ public interface ChildTemplateTableRepository extends JpaRepository<ChildTemplat
      * @param daysToExpire the days before expiry
      * @return list of matching templates
      */
-    @Cacheable(value = "childTemplates", key = "#messageType + '_' + #daysToExpire")
     List<ChildTemplateTable> findByMessageTypeAndDaysToExpire(String messageType, Integer daysToExpire);
 }

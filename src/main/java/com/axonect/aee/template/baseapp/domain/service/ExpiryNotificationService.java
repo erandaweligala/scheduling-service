@@ -68,7 +68,7 @@ public class ExpiryNotificationService {
         int totalNotificationsSent = 0;
 
         try {
-            // Fetch all EXPIRE type templates from cache/DB
+            // Fetch all EXPIRE type templates from database
             List<ChildTemplateTable> expireTemplates = childTemplateTableRepository.findAllExpireTemplates();
 
             if (expireTemplates.isEmpty()) {

@@ -11,7 +11,6 @@ This implementation provides a comprehensive solution for sending Kafka-based no
 1. **ChildTemplateTable Entity** (`AAA.CHILD_TEMPLATE_TABLE`)
    - Stores notification message templates with configurable thresholds
    - Supports multiple message types (EXPIRE, QUOTA, etc.)
-   - Cached in Redis for optimal performance
 
 2. **ExpiryNotificationService**
    - Core business logic for processing expiry notifications
@@ -88,7 +87,7 @@ INSERT INTO AAA.CHILD_TEMPLATE_TABLE (
    - Scheduler triggers `ExpiryNotificationService.processExpiryNotifications()`
 
 2. **Template Processing**
-   - Fetches all templates with `MESSAGE_TYPE = 'EXPIRE'` from cache/database
+   - Fetches all templates with `MESSAGE_TYPE = 'EXPIRE'` from database
    - Each template specifies `DAYS_TO_EXPIRE` threshold
 
 3. **Date Calculation**
@@ -101,7 +100,6 @@ INSERT INTO AAA.CHILD_TEMPLATE_TABLE (
 
 5. **User Data Retrieval**
    - Gets `ServiceInstance` for username and plan name
-   - All data retrieved from cache where possible
 
 6. **Message Building**
    - Replaces dynamic placeholders:
@@ -179,8 +177,7 @@ kafka.topic:
 src/main/java/com/axonect/aee/template/baseapp/
 ├── application/
 │   ├── config/
-│   │   ├── KafkaConfig.java                    # Kafka producer configuration
-│   │   └── RedisConfig.java                    # Cache configuration (updated)
+│   │   └── KafkaConfig.java                    # Kafka producer configuration
 │   └── repository/
 │       ├── ChildTemplateTableRepository.java   # Template repository
 │       └── BucketInstanceRepository.java       # Bucket queries (updated)
@@ -201,19 +198,15 @@ src/main/java/com/axonect/aee/template/baseapp/
 
 ### Performance Optimizations
 
-1. **Redis Caching**
-   - Template configurations cached for 6 hours
-   - Reduces database load for frequently accessed data
-
-2. **Batch Processing**
+1. **Batch Processing**
    - Processes bucket instances in batches of 100
    - Handles millions of records efficiently
 
-3. **Database Indexing**
+2. **Database Indexing**
    - Uses Oracle query hints for index optimization
    - Leverages `idx_bucket_instance_expiration` index
 
-4. **Kafka Batching**
+3. **Kafka Batching**
    - Configurable batch size and linger time
    - Compression enabled (snappy) for network efficiency
 
@@ -316,16 +309,14 @@ ALERT: {PLAN_NAME} expires on {DATE_OF_EXPIRY} ({DAYS_TO_EXPIRE} days remaining)
 ### Prerequisites
 
 1. Kafka cluster running and accessible
-2. Redis server running (for caching)
-3. Oracle database with CHILD_TEMPLATE_TABLE created
-4. Proper indexes on BUCKET_INSTANCE table
+2. Oracle database with CHILD_TEMPLATE_TABLE created
+3. Proper indexes on BUCKET_INSTANCE table
 
 ### Configuration Steps
 
 1. Update `application.yml` with your Kafka broker addresses
-2. Configure Redis connection settings
-3. Set appropriate cron schedule for your timezone
-4. Adjust batch sizes based on your data volume
+2. Set appropriate cron schedule for your timezone
+3. Adjust batch sizes based on your data volume
 
 ### Dependencies Added
 
@@ -350,11 +341,6 @@ ALERT: {PLAN_NAME} expires on {DATE_OF_EXPIRY} ({DAYS_TO_EXPIRE} days remaining)
    - Verify Kafka broker is running and accessible
    - Check bootstrap-servers configuration
    - Ensure topic exists (auto-created by default)
-
-3. **Cache not working**
-   - Verify Redis is running
-   - Check Redis connection settings in application.yml
-   - Look for cache-related errors in logs
 
 ### Debug Mode
 
