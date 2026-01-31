@@ -86,9 +86,9 @@ spring:
       idle-timeout: 300000      # 5 minutes: close idle connections faster
       connection-timeout: 20000 # 20 seconds to get a connection
       max-lifetime: 1800000     # 30 minutes: max life of a connection
-      validation-timeout: 3000  # 3 seconds to validate connection
+      validation-timeout: 5000  # 5 seconds to validate connection (increased to avoid Oracle setNetworkTimeout issues)
       leak-detection-threshold: 60000  # 60 seconds: detect connection leaks
-      initialization-fail-timeout: 0 # Prevent app from failing if DB not ready
+      initialization-fail-timeout: -1 # Allow unlimited time for initial pool setup (handles Oracle connection delays)
       pool-name: OraclePool
       auto-commit: false  # Explicit transaction control for better performance
       # Oracle-specific optimizations
@@ -96,6 +96,7 @@ spring:
         oracle.jdbc.implicitStatementCacheSize: 50  # Cache prepared statements
         oracle.net.CONNECT_TIMEOUT: 20000  # 20 seconds
         oracle.jdbc.ReadTimeout: 60000  # 60 seconds for large queries
+        v$session.program: scheduling-service  # Set program name for Oracle session tracking
   jpa:
     hibernate:
       ddl-auto: update
