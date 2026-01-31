@@ -23,6 +23,7 @@ import com.axonect.aee.template.baseapp.domain.util.Constants;
 import com.axonect.aee.template.baseapp.domain.util.LogMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
@@ -65,8 +66,10 @@ public class RecurrentServiceService {
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
     // Self-injection to enable transactional method calls via proxy
+    // Using field injection to avoid circular dependency during constructor injection
+    @Autowired
     @Lazy
-    private final RecurrentServiceService self;
+    private RecurrentServiceService self;
 
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
