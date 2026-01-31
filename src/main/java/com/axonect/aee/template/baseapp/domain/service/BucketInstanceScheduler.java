@@ -18,14 +18,10 @@ public class BucketInstanceScheduler {
 
     private final DeleteBucketInstanceService deleteBucketInstanceService;
 
-    @Autowired
-    private BucketInstanceScheduler self;
 
-    /**
-     * Scheduled task to delete expired bucket instances.
-     * Runs daily at 2:00 AM to clean up expired buckets.
-     * Schedule can be configured via: delete-expired-buckets.schedule property
-     */
+    private final BucketInstanceScheduler self;
+
+    //todo need to set clear balance bucketExpiryDate  cache data
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
     public void scheduleDeleteExpiredBuckets() {
         log.info("Starting scheduled deletion of expired bucket instances");

@@ -203,7 +203,7 @@ public class UserCacheService {
     public boolean userDataExists(String userId) {
         String userKey = KEY_PREFIX + userId;
         try {
-            return Boolean.TRUE.equals(redisTemplateString.hasKey(userKey));
+            return redisTemplateString.hasKey(userKey);
         } catch (Exception e) {
             log.error("Failed to check user data existence for userId: {}", userId, e);
             return false;
@@ -248,7 +248,7 @@ public class UserCacheService {
 
                     return shouldKeep;
                 })
-                .collect(Collectors.toList());
+                .toList();
 
         int removedCount = originalSize - filteredBalances.size();
         if (removedCount > 0) {

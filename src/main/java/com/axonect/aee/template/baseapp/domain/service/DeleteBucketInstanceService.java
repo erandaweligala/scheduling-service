@@ -26,7 +26,6 @@ public class DeleteBucketInstanceService {
     @Value("${delete-expired-buckets.chunk-size}")
     private int chunkSize;
 
-    //todo need to Remove Balance Eliment Balance.bucketExpiryDate = after 1 day and balance.quota = 0 is notUnlimited Bucket and after save from Redis Cache
     public void deleteExpiredBucketInstance(){
         log.debug("Starting delete expired buckets");
 
