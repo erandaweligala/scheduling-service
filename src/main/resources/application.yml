@@ -131,6 +131,7 @@ spring:
 
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
+delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 
 # Cache API Configuration
 cache.api.connect-timeout: 5000         # Connection timeout in milliseconds
