@@ -21,8 +21,9 @@ public class BucketInstanceScheduler {
     private final UserCacheService userCacheService;
     private final ExpiryNotificationService expiryNotificationService;
 
+    @Autowired
     @Lazy
-    private final BucketInstanceScheduler self;
+    private BucketInstanceScheduler self;
 
     @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
     public void scheduleDeleteExpiredBuckets() {
