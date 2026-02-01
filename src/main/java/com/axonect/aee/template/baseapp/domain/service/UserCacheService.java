@@ -1,6 +1,9 @@
 package com.axonect.aee.template.baseapp.domain.service;
 
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
+import com.axonect.aee.template.baseapp.domain.exception.CacheOperationException;
+import com.axonect.aee.template.baseapp.domain.exception.CacheSerializationException;
+import com.axonect.aee.template.baseapp.domain.exception.CacheTimeoutException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -73,7 +76,7 @@ public class UserCacheService {
                     return userData;
                 } catch (Exception e) {
                     log.error("Failed to deserialize user data for userId: {} - {}", userId, e.getMessage());
-                    throw new RuntimeException("Failed to deserialize user data", e);
+                    throw new CacheSerializationException("Failed to deserialize user data", e);
                 }
             }
 
@@ -84,10 +87,10 @@ public class UserCacheService {
 
         } catch (java.util.concurrent.TimeoutException e) {
             log.error("Timeout getting user data for userId: {}", userId, e);
-            throw new RuntimeException("Timeout getting user data for userId: " + userId, e);
+            throw new CacheTimeoutException("Timeout getting user data for userId: " + userId, e);
         } catch (Exception e) {
             log.error("Failed to get user data for userId: {}", userId, e);
-            throw new RuntimeException("Failed to get user data for userId: " + userId, e);
+            throw new CacheOperationException("Failed to get user data for userId: " + userId, e);
         }
     }
 
@@ -146,10 +149,10 @@ public class UserCacheService {
 
         } catch (java.util.concurrent.TimeoutException e) {
             log.error("Timeout updating cache for user: {}", userId, e);
-            throw new RuntimeException("Timeout updating cache for user: " + userId, e);
+            throw new CacheTimeoutException("Timeout updating cache for user: " + userId, e);
         } catch (Exception e) {
             log.error("Failed to update cache for user: {}", userId, e);
-            throw new RuntimeException("Failed to serialize or update user data for userId: " + userId, e);
+            throw new CacheOperationException("Failed to serialize or update user data for userId: " + userId, e);
         }
     }
 
@@ -163,7 +166,7 @@ public class UserCacheService {
             return redisTemplateString.opsForValue().get(groupKey);
         } catch (Exception e) {
             log.error("Failed to get group data for userName: {}", userName, e);
-            throw new RuntimeException("Failed to get group data for userName: " + userName, e);
+            throw new CacheOperationException("Failed to get group data for userName: " + userName, e);
         }
     }
 
@@ -178,7 +181,7 @@ public class UserCacheService {
             log.debug("Deleted user data for userId: {}", userId);
         } catch (Exception e) {
             log.error("Failed to delete user data for userId: {}", userId, e);
-            throw new RuntimeException("Failed to delete user data for userId: " + userId, e);
+            throw new CacheOperationException("Failed to delete user data for userId: " + userId, e);
         }
     }
 
@@ -193,7 +196,7 @@ public class UserCacheService {
             log.debug("Deleted group data for userName: {}", userName);
         } catch (Exception e) {
             log.error("Failed to delete group data for userName: {}", userName, e);
-            throw new RuntimeException("Failed to delete group data for userName: " + userName, e);
+            throw new CacheOperationException("Failed to delete group data for userName: " + userName, e);
         }
     }
 

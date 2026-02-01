@@ -7,6 +7,7 @@ import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotifica
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
+import com.axonect.aee.template.baseapp.domain.exception.NotificationProcessingException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -93,7 +94,7 @@ public class ExpiryNotificationService {
 
         } catch (Exception e) {
             log.error("Error processing expiry notifications", e);
-            throw new RuntimeException("Failed to process expiry notifications", e);
+            throw new NotificationProcessingException("Failed to process expiry notifications", e);
         }
 
         return totalNotificationsSent;
