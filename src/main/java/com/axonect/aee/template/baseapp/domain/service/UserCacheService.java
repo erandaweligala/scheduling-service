@@ -57,31 +57,25 @@ public class UserCacheService {
         String key = KEY_PREFIX + userId;
 
         try {
-            // Get from Redis with timeout (5 seconds as per original @Timeout)
-            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
-                return redisTemplateString.opsForValue().get(key);
-            }, executorService);
+            String json = fetchUserDataFromRedis(key);
 
-            String json = future.get(5, TimeUnit.SECONDS);
-
-            if (json != null) {
-                UserSessionData userData = deserializeUserData(json, userId);
-
+            if (json == null) {
                 if (log.isDebugEnabled()) {
-                    log.debug("User data retrieved for userId: {} in {} ms",
-                            userId, (System.currentTimeMillis() - startTime));
+                    log.debug("No user data found for userId: {}", userId);
                 }
-
-                return userData;
+                return null;
             }
+
+            UserSessionData userData = deserializeUserData(json, userId);
 
             if (log.isDebugEnabled()) {
-                log.debug("No user data found for userId: {}", userId);
+                log.debug("User data retrieved for userId: {} in {} ms",
+                        userId, (System.currentTimeMillis() - startTime));
             }
-            return null;
+
+            return userData;
 
         } catch (CacheSerializationException e) {
-            // Rethrow serialization exceptions as-is
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -94,6 +88,12 @@ public class UserCacheService {
             log.error("Failed to get user data for userId: {}", userId, e);
             throw new CacheOperationException("Failed to get user data for userId: " + userId, e);
         }
+    }
+
+    private String fetchUserDataFromRedis(String key) throws Exception {
+        CompletableFuture<String> future = CompletableFuture.supplyAsync(() ->
+                redisTemplateString.opsForValue().get(key), executorService);
+        return future.get(5, TimeUnit.SECONDS);
     }
 
     /**
@@ -124,41 +124,13 @@ public class UserCacheService {
         String userKey = KEY_PREFIX + userId;
 
         try {
-            // Remove expired balance elements before saving to Redis
             removeExpiredBalanceElements(userData);
-
-            // Serialize user data to JSON
             String jsonValue = objectMapper.writeValueAsString(userData);
 
-            // If groupId exists and is not "1", update both user and group data in parallel
-            if (userData != null && userData.getGroupId() != null
-                    && !userData.getGroupId().equalsIgnoreCase("1")) {
-
-                String groupKey = GROUP_KEY_PREFIX + userName;
-                String groupValues = userData.getGroupId() + "," + userData.getConcurrency() + ","
-                        + userData.getUserStatus() + "," + userData.getSessionTimeOut();
-
-                // Execute both SET operations in parallel for better performance
-                CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
-
-                CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(groupKey, groupValues), executorService);
-
-                // Wait for both operations to complete with 8 second timeout
-                CompletableFuture.allOf(userFuture, groupFuture)
-                        .get(8, TimeUnit.SECONDS);
-
-                if (log.isDebugEnabled()) {
-                    log.debug("Updated user and group cache for userId: {}", userId);
-                }
+            if (shouldUpdateGroupCache(userData)) {
+                updateUserAndGroupCache(userId, userName, userKey, jsonValue, userData);
             } else {
-                // Only update user data
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
-
-                future.get(8, TimeUnit.SECONDS);
-
-                if (log.isDebugEnabled()) {
-                    log.debug("Updated user cache for userId: {}", userId);
-                }
+                updateUserCacheOnly(userId, userKey, jsonValue);
             }
 
         } catch (InterruptedException e) {
@@ -171,6 +143,42 @@ public class UserCacheService {
         } catch (Exception e) {
             log.error("Failed to update cache for user: {}", userId, e);
             throw new CacheOperationException("Failed to serialize or update user data for userId: " + userId, e);
+        }
+    }
+
+    private boolean shouldUpdateGroupCache(UserSessionData userData) {
+        return userData != null
+                && userData.getGroupId() != null
+                && !userData.getGroupId().equalsIgnoreCase("1");
+    }
+
+    private void updateUserAndGroupCache(String userId, String userName, String userKey,
+                                        String jsonValue, UserSessionData userData) throws Exception {
+        String groupKey = GROUP_KEY_PREFIX + userName;
+        String groupValues = userData.getGroupId() + "," + userData.getConcurrency() + ","
+                + userData.getUserStatus() + "," + userData.getSessionTimeOut();
+
+        CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() ->
+                redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
+
+        CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() ->
+                redisTemplateString.opsForValue().set(groupKey, groupValues), executorService);
+
+        CompletableFuture.allOf(userFuture, groupFuture).get(8, TimeUnit.SECONDS);
+
+        if (log.isDebugEnabled()) {
+            log.debug("Updated user and group cache for userId: {}", userId);
+        }
+    }
+
+    private void updateUserCacheOnly(String userId, String userKey, String jsonValue) throws Exception {
+        CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
+                redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
+
+        future.get(8, TimeUnit.SECONDS);
+
+        if (log.isDebugEnabled()) {
+            log.debug("Updated user cache for userId: {}", userId);
         }
     }
 
