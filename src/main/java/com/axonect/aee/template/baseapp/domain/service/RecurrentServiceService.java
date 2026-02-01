@@ -483,6 +483,7 @@ public class RecurrentServiceService {
         bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
         bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
         bucketInstance.setExpiration(serviceInstance.getServiceCycleEndDate());
+        bucketInstance.setIsUnlimited(planToBucket.getIsUnlimited());
         bucketInstance.setUsage(0L);
     }
 
@@ -779,7 +780,7 @@ public class RecurrentServiceService {
             balance.setConsumptionLimit(bucketInstance.getConsumptionLimit());
             balance.setConsumptionLimitWindow(Long.valueOf(bucketInstance.getConsumptionLimitWindow()));
             balance.setBucketUsername(serviceInstance.getUsername());
-            balance.setUnlimited(false); // Default to false, update if needed based on business logic
+            balance.setUnlimited(bucketInstance.getIsUnlimited());
             balance.setGroup(Boolean.TRUE.equals(serviceInstance.getIsGroup()));
             balance.setUsage(bucketInstance.getUsage() != null ? bucketInstance.getUsage() : 0L);
 

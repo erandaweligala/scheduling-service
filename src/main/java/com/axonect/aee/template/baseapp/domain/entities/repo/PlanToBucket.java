@@ -58,4 +58,7 @@ public class PlanToBucket implements Serializable {
 
     @Column(name = "UPDATED_AT", nullable = false)
     private LocalDateTime updatedAt;
+
+    @Column(name = "IS_UNLIMITED",nullable = false)
+    private Boolean isUnlimited;
 }

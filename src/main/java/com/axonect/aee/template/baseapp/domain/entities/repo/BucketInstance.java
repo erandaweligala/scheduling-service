@@ -76,4 +76,7 @@ public class BucketInstance implements Serializable {
     @Column(name = "UPDATED_AT")
     @UpdateTimestamp
     private LocalDateTime updatedAt;
+
+    @Column(name = "IS_UNLIMITED",nullable = false)
+    private Boolean isUnlimited;
 }
