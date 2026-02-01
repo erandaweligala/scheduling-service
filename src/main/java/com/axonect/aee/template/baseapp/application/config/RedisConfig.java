@@ -93,10 +93,10 @@ public class RedisConfig {
      * Configure Connection Pool for high-performance operations
      */
     @Bean
-    public GenericObjectPoolConfig<?> lettucePoolConfig() {
+    public GenericObjectPoolConfig<Object> lettucePoolConfig() {
         log.info("Configuring Lettuce connection pool for high concurrency");
 
-        GenericObjectPoolConfig<?> poolConfig = new GenericObjectPoolConfig<>();
+        GenericObjectPoolConfig<Object> poolConfig = new GenericObjectPoolConfig<>();
         RedisProperties.Pool pool = redisProperties.getLettuce().getPool();
 
         poolConfig.setMaxTotal(pool.getMaxActive());
@@ -127,7 +127,7 @@ public class RedisConfig {
     public LettuceConnectionFactory redisConnectionFactory(
             ClientResources clientResources,
             ClientOptions clientOptions,
-            GenericObjectPoolConfig<?> poolConfig) {
+            GenericObjectPoolConfig<Object> poolConfig) {
 
         log.info("Configuring high-performance LettuceConnectionFactory");
         log.info("Redis host: {}, port: {}", redisProperties.getHost(), redisProperties.getPort());
