@@ -67,8 +67,6 @@ public class RecurrentServiceService {
     private final UserCacheService userCacheService;
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
 
-    // Self-injection to enable transactional method calls via proxy
-    // Using field injection to avoid circular dependency during constructor injection
     @Autowired
     @Lazy
     private RecurrentServiceService self;
@@ -76,7 +74,7 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    @Scheduled(fixedRate = 60000)
+    //todo need to set scheduling proccess 12.30AM time
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
         String batchId = UUID.randomUUID().toString();
