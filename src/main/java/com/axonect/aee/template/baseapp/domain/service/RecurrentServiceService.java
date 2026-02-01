@@ -141,21 +141,21 @@ public class RecurrentServiceService {
             // Process each service in its own transaction
             for (ServiceInstance serviceInstance : services) {
                 UserEntity user = userMap.get(serviceInstance.getUsername());
-                if (user == null) {
-                    log.warn("User not found for service ID: {}, username: {}",
-                            serviceInstance.getId(), serviceInstance.getUsername());
-                    failureCount++;
-                    self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
-                            new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
-                    continue;
-                }
-
                 Plan plan = planMap.get(serviceInstance.getPlanId());
-                if (plan == null) {
-                    log.error("Plan not found: {}", serviceInstance.getPlanId());
+
+                // Validate required data for processing
+                if (user == null || plan == null) {
                     failureCount++;
-                    self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
-                            new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
+                    if (user == null) {
+                        log.warn("User not found for service ID: {}, username: {}",
+                                serviceInstance.getId(), serviceInstance.getUsername());
+                        self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+                                new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
+                    } else {
+                        log.error("Plan not found: {}", serviceInstance.getPlanId());
+                        self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+                                new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
+                    }
                     continue;
                 }
 
@@ -496,19 +496,17 @@ public class RecurrentServiceService {
         Long remainingTotal = totalCFAmount;
 
         for (BucketInstance existingCFBucket : existingCFBuckets) {
-            if (remainingTotal < totalCFLimit) {
-                break;
-            }
-
-            Long excess = remainingTotal - totalCFLimit;
-            if (excess < existingCFBucket.getCurrentBalance()) {
-                existingCFBucket.setCurrentBalance(existingCFBucket.getCurrentBalance() - excess);
-                updatesToSave.add(existingCFBucket);
-                break;
-            } else {
-                remainingTotal -= existingCFBucket.getCurrentBalance();
-                existingCFBucket.setCurrentBalance(0L);
-                updatesToSave.add(existingCFBucket);
+            if (remainingTotal >= totalCFLimit) {
+                Long excess = remainingTotal - totalCFLimit;
+                if (excess < existingCFBucket.getCurrentBalance()) {
+                    existingCFBucket.setCurrentBalance(existingCFBucket.getCurrentBalance() - excess);
+                    updatesToSave.add(existingCFBucket);
+                    break;
+                } else {
+                    remainingTotal -= existingCFBucket.getCurrentBalance();
+                    existingCFBucket.setCurrentBalance(0L);
+                    updatesToSave.add(existingCFBucket);
+                }
             }
         }
     }
