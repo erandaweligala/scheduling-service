@@ -43,31 +43,28 @@ springdoc:
     path: /v3/api-docs
 
 spring:
-  # High-Performance Redis Sentinel Configuration with Lettuce (Reactive Client)
+  # High-Performance Redis Configuration with Lettuce (Reactive Client)
   data:
     redis:
-      # Redis Sentinel Configuration
-      sentinel:
-        master: mymaster  # Sentinel master name
-        nodes:
-          - redis-cluster-headless.csg-aaa-query-cache.svc.cluster.local:26379  # Sentinel node(s)
-      password: S3cure_Redis_Pass_w0rd!  # Redis authentication password
+      host: localhost
+      port: 6379
+      password:  # Set password if Redis requires authentication
       database: 0  # Redis database index
-      timeout: 120000ms  # Command timeout (120 seconds)
+      timeout: 10000ms  # Command timeout
       connect-timeout: 10000ms  # Connection timeout
       client-type: lettuce  # Use Lettuce instead of Jedis
       lettuce:
         pool:
-          # Connection pool configuration for high performance with Sentinel
-          max-active: 600     # Maximum active connections in pool (max-pool-size)
-          max-idle: 300       # Maximum idle connections in pool
-          min-idle: 50        # Minimum idle connections in pool (keep connections ready)
-          max-wait: 3000ms    # Maximum time to wait for connection from pool (max-pool-waiting)
-          time-between-eviction-runs: 20000ms  # Pool cleaner interval (pool-cleaner-interval)
+          # Connection pool configuration for high performance
+          max-active: 100     # Maximum active connections in pool (increased for high throughput)
+          max-idle: 50        # Maximum idle connections in pool
+          min-idle: 20        # Minimum idle connections in pool (keep connections ready)
+          max-wait: 5000ms    # Maximum time to wait for connection from pool
+          time-between-eviction-runs: 60000ms  # Eviction thread run interval
         shutdown-timeout: 100ms  # Graceful shutdown timeout
         cluster:
           refresh:
-            period: 60000ms  # Cluster topology refresh period
+            period: 60000ms  # Cluster topology refresh period (if using cluster)
             adaptive: true   # Enable adaptive topology refresh
   cache:
     type: redis
@@ -77,7 +74,7 @@ spring:
       use-key-prefix: true      # Use cache name as key prefix
       key-prefix: "scheduling-service:"
   datasource:
-#    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
+    #    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
     url: jdbc:oracle:thin:@localhost:1522/ORCL
     username: aaa
     password: Aaa!89nky78D

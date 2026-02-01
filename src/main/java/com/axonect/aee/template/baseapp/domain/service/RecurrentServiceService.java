@@ -30,6 +30,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -53,6 +54,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 @Slf4j
+@SuppressWarnings("java:S6813")
 public class RecurrentServiceService {
 
     private final UserRepository userRepository;
@@ -74,6 +76,7 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
+    @Scheduled(fixedRate = 60000)
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
         String batchId = UUID.randomUUID().toString();
@@ -481,7 +484,7 @@ public class RecurrentServiceService {
         bucketInstance.setCurrentBalance(planToBucket.getInitialQuota());
         bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
         bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
-        bucketInstance.setExpiration(serviceInstance.getExpiryDate());
+        bucketInstance.setExpiration(serviceInstance.getServiceCycleEndDate());
         bucketInstance.setUsage(0L);
     }
 
@@ -549,6 +552,7 @@ public class RecurrentServiceService {
     /**
      * Adjusts existing carry forward buckets to respect total carry forward limit
      */
+    @SuppressWarnings("java:S135")
     private void adjustExistingCFBuckets(List<BucketInstance> existingCFBuckets,
                                         Long totalCFAmount,
                                         Long totalCFLimit,
