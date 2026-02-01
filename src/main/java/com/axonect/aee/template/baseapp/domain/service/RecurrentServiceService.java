@@ -79,25 +79,19 @@ public class RecurrentServiceService {
         String batchId = UUID.randomUUID().toString();
         log.info("Reactivate expired recurrent services started with batch ID: {}", batchId);
 
-        int pageNumber = 0;
-        Pageable pageable = PageRequest.of(pageNumber, chunkSize);
-        Page<ServiceInstance> servicePage;
-
         LocalDateTime tomorrowStart = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE))
                 .plusDays(1)
                 .atStartOfDay();
         LocalDateTime tomorrowEnd = tomorrowStart.plusDays(1);
 
-        int successCount = 0;
-        int failureCount = 0;
+        ProcessingResults results = new ProcessingResults();
+        int pageNumber = 0;
 
+        Page<ServiceInstance> servicePage;
         do {
+            Pageable pageable = PageRequest.of(pageNumber, chunkSize);
             servicePage = serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
-                    tomorrowStart,
-                    tomorrowEnd,
-                    tomorrowStart,
-                    pageable
-            );
+                    tomorrowStart, tomorrowEnd, tomorrowStart, pageable);
 
             List<ServiceInstance> services = servicePage.getContent();
             if (services.isEmpty()) {
@@ -106,91 +100,141 @@ public class RecurrentServiceService {
             }
 
             log.info("Processing {} services in batch (page {})", services.size(), pageNumber);
-
-            // BATCH LOAD: Collect all unique identifiers
-            Set<String> usernames = services.stream().map(ServiceInstance::getUsername).collect(Collectors.toSet());
-            Set<String> planIds = services.stream().map(ServiceInstance::getPlanId).collect(Collectors.toSet());
-            Set<Long> serviceIds = services.stream().map(ServiceInstance::getId).collect(Collectors.toSet());
-
-            // BATCH LOAD: Fetch all required data in bulk
-            Map<String, UserEntity> userMap = userRepository.findByUserNameIn(usernames).stream()
-                    .collect(Collectors.toMap(UserEntity::getUserName, u -> u));
-            Map<String, Plan> planMap = planRepository.findByPlanIdIn(planIds).stream()
-                    .collect(Collectors.toMap(Plan::getPlanId, p -> p));
-            Map<Long, List<BucketInstance>> bucketInstanceMap = bucketInstanceRepository.findByServiceIdIn(serviceIds).stream()
-                    .collect(Collectors.groupingBy(BucketInstance::getServiceId));
-            Map<String, List<PlanToBucket>> planToBucketMap = planToBucketRepository.findByPlanIdIn(planIds).stream()
-                    .collect(Collectors.groupingBy(PlanToBucket::getPlanId));
-
-            // Collect all unique bucket IDs and QoS IDs
-            Set<String> bucketIds = planToBucketMap.values().stream()
-                    .flatMap(Collection::stream)
-                    .map(PlanToBucket::getBucketId)
-                    .collect(Collectors.toSet());
-
-            Map<String, Bucket> bucketMap = bucketRepository.findByBucketIdIn(bucketIds).stream()
-                    .collect(Collectors.toMap(Bucket::getBucketId, b -> b));
-
-            Set<Long> qosIds = bucketMap.values().stream()
-                    .map(Bucket::getQosId)
-                    .collect(Collectors.toSet());
-
-            Map<Long, QOSProfile> qosProfileMap = qosProfileRepository.findByIdIn(qosIds).stream()
-                    .collect(Collectors.toMap(QOSProfile::getId, q -> q));
-
-            // Process each service in its own transaction
-            for (ServiceInstance serviceInstance : services) {
-                UserEntity user = userMap.get(serviceInstance.getUsername());
-                Plan plan = planMap.get(serviceInstance.getPlanId());
-
-                // Validate required data for processing
-                if (user == null || plan == null) {
-                    failureCount++;
-                    if (user == null) {
-                        log.warn("User not found for service ID: {}, username: {}",
-                                serviceInstance.getId(), serviceInstance.getUsername());
-                        self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
-                                new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
-                    } else {
-                        log.error("Plan not found: {}", serviceInstance.getPlanId());
-                        self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
-                                new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
-                    }
-                    continue;
-                }
-
-                try {
-                    // Each service is processed in its own independent transaction
-                    self.processServiceInstanceInTransaction(
-                            serviceInstance,
-                            user,
-                            plan,
-                            bucketInstanceMap.get(serviceInstance.getId()),
-                            planToBucketMap.get(plan.getPlanId()),
-                            bucketMap,
-                            qosProfileMap
-                    );
-                    successCount++;
-                    log.info("Successfully processed service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
-                } catch (Exception ex) {
-                    failureCount++;
-                    log.error("Failed to process service ID: {} for user: {}. Error: {}",
-                            serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
-
-                    // Save failure details to database for tracking and retry
-                    self.saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
-
-                    // Continue processing other services even if this one fails
-                }
-            }
+            BatchData batchData = loadBatchData(services);
+            processServicesInBatch(services, batchData, batchId, results);
 
             pageNumber++;
-            pageable = PageRequest.of(pageNumber, chunkSize);
-
         } while (!servicePage.isLast());
 
         log.info("Reactivate expired recurrent services Completed. Success: {}, Failures: {}",
-                successCount, failureCount);
+                results.getSuccessCount(), results.getFailureCount());
+    }
+
+    private BatchData loadBatchData(List<ServiceInstance> services) {
+        Set<String> usernames = services.stream().map(ServiceInstance::getUsername).collect(Collectors.toSet());
+        Set<String> planIds = services.stream().map(ServiceInstance::getPlanId).collect(Collectors.toSet());
+        Set<Long> serviceIds = services.stream().map(ServiceInstance::getId).collect(Collectors.toSet());
+
+        Map<String, UserEntity> userMap = userRepository.findByUserNameIn(usernames).stream()
+                .collect(Collectors.toMap(UserEntity::getUserName, u -> u));
+        Map<String, Plan> planMap = planRepository.findByPlanIdIn(planIds).stream()
+                .collect(Collectors.toMap(Plan::getPlanId, p -> p));
+        Map<Long, List<BucketInstance>> bucketInstanceMap = bucketInstanceRepository.findByServiceIdIn(serviceIds).stream()
+                .collect(Collectors.groupingBy(BucketInstance::getServiceId));
+        Map<String, List<PlanToBucket>> planToBucketMap = planToBucketRepository.findByPlanIdIn(planIds).stream()
+                .collect(Collectors.groupingBy(PlanToBucket::getPlanId));
+
+        Set<String> bucketIds = planToBucketMap.values().stream()
+                .flatMap(Collection::stream)
+                .map(PlanToBucket::getBucketId)
+                .collect(Collectors.toSet());
+
+        Map<String, Bucket> bucketMap = bucketRepository.findByBucketIdIn(bucketIds).stream()
+                .collect(Collectors.toMap(Bucket::getBucketId, b -> b));
+
+        Set<Long> qosIds = bucketMap.values().stream()
+                .map(Bucket::getQosId)
+                .collect(Collectors.toSet());
+
+        Map<Long, QOSProfile> qosProfileMap = qosProfileRepository.findByIdIn(qosIds).stream()
+                .collect(Collectors.toMap(QOSProfile::getId, q -> q));
+
+        return new BatchData(userMap, planMap, bucketInstanceMap, planToBucketMap, bucketMap, qosProfileMap);
+    }
+
+    private void processServicesInBatch(List<ServiceInstance> services, BatchData batchData,
+                                        String batchId, ProcessingResults results) {
+        for (ServiceInstance serviceInstance : services) {
+            UserEntity user = batchData.userMap.get(serviceInstance.getUsername());
+            Plan plan = batchData.planMap.get(serviceInstance.getPlanId());
+
+            if (!validateServiceData(serviceInstance, user, plan, batchId)) {
+                results.incrementFailure();
+                continue;
+            }
+
+            processServiceInstance(serviceInstance, user, plan, batchData, batchId, results);
+        }
+    }
+
+    private boolean validateServiceData(ServiceInstance serviceInstance, UserEntity user, Plan plan, String batchId) {
+        if (user == null) {
+            log.warn("User not found for service ID: {}, username: {}",
+                    serviceInstance.getId(), serviceInstance.getUsername());
+            self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+                    new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
+            return false;
+        }
+
+        if (plan == null) {
+            log.error("Plan not found: {}", serviceInstance.getPlanId());
+            self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+                    new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void processServiceInstance(ServiceInstance serviceInstance, UserEntity user, Plan plan,
+                                        BatchData batchData, String batchId, ProcessingResults results) {
+        try {
+            self.processServiceInstanceInTransaction(
+                    serviceInstance, user, plan,
+                    batchData.bucketInstanceMap.get(serviceInstance.getId()),
+                    batchData.planToBucketMap.get(plan.getPlanId()),
+                    batchData.bucketMap,
+                    batchData.qosProfileMap
+            );
+            results.incrementSuccess();
+            log.info("Successfully processed service {} for user {}", serviceInstance.getPlanId(), user.getUserName());
+        } catch (Exception ex) {
+            results.incrementFailure();
+            log.error("Failed to process service ID: {} for user: {}. Error: {}",
+                    serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
+            self.saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
+        }
+    }
+
+    private static class BatchData {
+        final Map<String, UserEntity> userMap;
+        final Map<String, Plan> planMap;
+        final Map<Long, List<BucketInstance>> bucketInstanceMap;
+        final Map<String, List<PlanToBucket>> planToBucketMap;
+        final Map<String, Bucket> bucketMap;
+        final Map<Long, QOSProfile> qosProfileMap;
+
+        BatchData(Map<String, UserEntity> userMap, Map<String, Plan> planMap,
+                 Map<Long, List<BucketInstance>> bucketInstanceMap, Map<String, List<PlanToBucket>> planToBucketMap,
+                 Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
+            this.userMap = userMap;
+            this.planMap = planMap;
+            this.bucketInstanceMap = bucketInstanceMap;
+            this.planToBucketMap = planToBucketMap;
+            this.bucketMap = bucketMap;
+            this.qosProfileMap = qosProfileMap;
+        }
+    }
+
+    private static class ProcessingResults {
+        private int successCount = 0;
+        private int failureCount = 0;
+
+        void incrementSuccess() {
+            successCount++;
+        }
+
+        void incrementFailure() {
+            failureCount++;
+        }
+
+        int getSuccessCount() {
+            return successCount;
+        }
+
+        int getFailureCount() {
+            return failureCount;
+        }
     }
 
     /**
@@ -272,34 +316,7 @@ public class RecurrentServiceService {
     private Integer getNumberOfValidityDays(String recurringPeriod, String billing, LocalDateTime currentBillCycleDate) {
         log.debug("Calculating validity days for recurring period: {}, billing: {}", recurringPeriod, billing);
         try {
-            // Check if recurring period is Daily
-            if ("DAILY".equalsIgnoreCase(recurringPeriod)) {
-                log.debug("Validity days: 1 (Daily recurring)");
-                return 1;
-            }
-
-            // Check if recurring period is Weekly
-            if ("WEEKLY".equalsIgnoreCase(recurringPeriod)) {
-                log.debug("Validity days: 7 (Weekly recurring)");
-                return 7;
-            }
-
-            // Check if billing is Calendar Month or Daily
-            if ("2".equals(billing) || "1".equals(billing)) {
-                int days = currentBillCycleDate.toLocalDate().lengthOfMonth();
-                log.debug("Validity days: {} (Calendar month length)", days);
-                return days;
-            }
-
-            // Default case: return number of days till next bill cycle date
-            LocalDateTime nextBillCycleDate = currentBillCycleDate.plusMonths(1);
-            int days = (int) ChronoUnit.DAYS.between(
-                    currentBillCycleDate.toLocalDate(),
-                    nextBillCycleDate.toLocalDate()
-            );
-            log.debug("Validity days: {} (Days till next cycle)", days);
-            return days;
-
+            return calculateValidityDays(recurringPeriod, billing, currentBillCycleDate);
         } catch (Exception ex) {
             log.error("Error calculating validity days for recurring period: {}, billing: {}", recurringPeriod, billing, ex);
             throw new AAAException(
@@ -308,8 +325,32 @@ public class RecurrentServiceService {
                     HttpStatus.INTERNAL_SERVER_ERROR
             );
         }
+    }
 
+    private Integer calculateValidityDays(String recurringPeriod, String billing, LocalDateTime currentBillCycleDate) {
+        if ("DAILY".equalsIgnoreCase(recurringPeriod)) {
+            log.debug("Validity days: 1 (Daily recurring)");
+            return 1;
+        }
 
+        if ("WEEKLY".equalsIgnoreCase(recurringPeriod)) {
+            log.debug("Validity days: 7 (Weekly recurring)");
+            return 7;
+        }
+
+        if ("2".equals(billing) || "1".equals(billing)) {
+            int days = currentBillCycleDate.toLocalDate().lengthOfMonth();
+            log.debug("Validity days: {} (Calendar month length)", days);
+            return days;
+        }
+
+        LocalDateTime nextBillCycleDate = currentBillCycleDate.plusMonths(1);
+        int days = (int) ChronoUnit.DAYS.between(
+                currentBillCycleDate.toLocalDate(),
+                nextBillCycleDate.toLocalDate()
+        );
+        log.debug("Validity days: {} (Days till next cycle)", days);
+        return days;
     }
 
 
@@ -390,44 +431,13 @@ public class RecurrentServiceService {
                                            PlanToBucket planToBucket, boolean isCFBucket, Long currentBalance,
                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
         try {
-            Bucket bucket = bucketMap.get(bucketId);
-            if (bucket == null) {
-                log.error("Bucket not found: {}", bucketId);
-                throw new AAAException(LogMessages.ERROR_POLICY_CONFLICT, "BUCKET_NOT_FOUND " + bucketId, HttpStatus.NOT_FOUND);
-            }
+            Bucket bucket = getBucketOrThrow(bucketId, bucketMap);
+            QOSProfile qosProfile = getQosProfileOrThrow(bucket, qosProfileMap);
 
-            QOSProfile qosProfile = qosProfileMap.get(bucket.getQosId());
-            if (qosProfile == null) {
-                log.error("QoS profile not found: {}", bucket.getQosId());
-                throw new AAAException(LogMessages.ERROR_POLICY_CONFLICT, "QOS_PROFILE_NOT_FOUND " + bucket.getQosId(), HttpStatus.NOT_FOUND);
-            }
-
-            bucketInstance.setBucketId(bucket.getBucketId());
-            bucketInstance.setBucketType(bucket.getBucketType());
-            bucketInstance.setPriority(bucket.getPriority());
-            bucketInstance.setTimeWindow(bucket.getTimeWindow());
-            bucketInstance.setRule(qosProfile.getBngCode());
-            bucketInstance.setServiceId(serviceInstance.getId());
-            bucketInstance.setCarryForward(planToBucket.getCarryForward());
-            bucketInstance.setMaxCarryForward(planToBucket.getMaxCarryForward());
-            bucketInstance.setTotalCarryForward(planToBucket.getTotalCarryForward());
-            bucketInstance.setConsumptionLimit(planToBucket.getConsumptionLimit());
-            bucketInstance.setConsumptionLimitWindow(planToBucket.getConsumptionLimitWindow());
-            bucketInstance.setCurrentBalance(planToBucket.getInitialQuota());
-            bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
-            bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
-            bucketInstance.setExpiration(serviceInstance.getExpiryDate());
-            bucketInstance.setUsage(0L);
+            setBasicBucketDetails(bucketInstance, bucket, serviceInstance, planToBucket, qosProfile);
 
             if (isCFBucket && currentBalance != null) {
-                bucketInstance.setBucketType(Constants.CARRY_FORWARD_BUCKET);
-                bucketInstance.setCarryForward(Boolean.FALSE);
-                if (currentBalance > planToBucket.getMaxCarryForward())
-                    currentBalance = planToBucket.getMaxCarryForward();
-                bucketInstance.setCurrentBalance(currentBalance);
-                bucketInstance.setInitialBalance(currentBalance);
-                bucketInstance.setExpiration(serviceInstance.getServiceStartDate()
-                        .plusDays(planToBucket.getCarryForwardValidity()));
+                applyCarryForwardDetails(bucketInstance, serviceInstance, planToBucket, currentBalance);
             }
         } catch (AAAException ex) {
             throw ex;
@@ -435,6 +445,56 @@ public class RecurrentServiceService {
             log.error("Error setting optimized bucket details for Bucket ID: {}", bucketId, ex);
             throw new AAAException(LogMessages.ERROR_INTERNAL_ERROR, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    private Bucket getBucketOrThrow(String bucketId, Map<String, Bucket> bucketMap) {
+        Bucket bucket = bucketMap.get(bucketId);
+        if (bucket == null) {
+            log.error("Bucket not found: {}", bucketId);
+            throw new AAAException(LogMessages.ERROR_POLICY_CONFLICT, "BUCKET_NOT_FOUND " + bucketId, HttpStatus.NOT_FOUND);
+        }
+        return bucket;
+    }
+
+    private QOSProfile getQosProfileOrThrow(Bucket bucket, Map<Long, QOSProfile> qosProfileMap) {
+        QOSProfile qosProfile = qosProfileMap.get(bucket.getQosId());
+        if (qosProfile == null) {
+            log.error("QoS profile not found: {}", bucket.getQosId());
+            throw new AAAException(LogMessages.ERROR_POLICY_CONFLICT, "QOS_PROFILE_NOT_FOUND " + bucket.getQosId(), HttpStatus.NOT_FOUND);
+        }
+        return qosProfile;
+    }
+
+    private void setBasicBucketDetails(BucketInstance bucketInstance, Bucket bucket, ServiceInstance serviceInstance,
+                                      PlanToBucket planToBucket, QOSProfile qosProfile) {
+        bucketInstance.setBucketId(bucket.getBucketId());
+        bucketInstance.setBucketType(bucket.getBucketType());
+        bucketInstance.setPriority(bucket.getPriority());
+        bucketInstance.setTimeWindow(bucket.getTimeWindow());
+        bucketInstance.setRule(qosProfile.getBngCode());
+        bucketInstance.setServiceId(serviceInstance.getId());
+        bucketInstance.setCarryForward(planToBucket.getCarryForward());
+        bucketInstance.setMaxCarryForward(planToBucket.getMaxCarryForward());
+        bucketInstance.setTotalCarryForward(planToBucket.getTotalCarryForward());
+        bucketInstance.setConsumptionLimit(planToBucket.getConsumptionLimit());
+        bucketInstance.setConsumptionLimitWindow(planToBucket.getConsumptionLimitWindow());
+        bucketInstance.setCurrentBalance(planToBucket.getInitialQuota());
+        bucketInstance.setCarryForwardValidity(planToBucket.getCarryForwardValidity());
+        bucketInstance.setInitialBalance(planToBucket.getInitialQuota());
+        bucketInstance.setExpiration(serviceInstance.getExpiryDate());
+        bucketInstance.setUsage(0L);
+    }
+
+    private void applyCarryForwardDetails(BucketInstance bucketInstance, ServiceInstance serviceInstance,
+                                         PlanToBucket planToBucket, Long currentBalance) {
+        bucketInstance.setBucketType(Constants.CARRY_FORWARD_BUCKET);
+        bucketInstance.setCarryForward(Boolean.FALSE);
+
+        Long adjustedBalance = Math.min(currentBalance, planToBucket.getMaxCarryForward());
+        bucketInstance.setCurrentBalance(adjustedBalance);
+        bucketInstance.setInitialBalance(adjustedBalance);
+        bucketInstance.setExpiration(serviceInstance.getServiceStartDate()
+                .plusDays(planToBucket.getCarryForwardValidity()));
     }
 
 
@@ -496,19 +556,28 @@ public class RecurrentServiceService {
         Long remainingTotal = totalCFAmount;
 
         for (BucketInstance existingCFBucket : existingCFBuckets) {
-            if (remainingTotal >= totalCFLimit) {
-                Long excess = remainingTotal - totalCFLimit;
-                if (excess < existingCFBucket.getCurrentBalance()) {
-                    existingCFBucket.setCurrentBalance(existingCFBucket.getCurrentBalance() - excess);
-                    updatesToSave.add(existingCFBucket);
-                    break;
-                } else {
-                    remainingTotal -= existingCFBucket.getCurrentBalance();
-                    existingCFBucket.setCurrentBalance(0L);
-                    updatesToSave.add(existingCFBucket);
-                }
+            if (remainingTotal < totalCFLimit) {
+                break;
             }
+
+            Long excess = remainingTotal - totalCFLimit;
+            if (adjustBucketForExcess(existingCFBucket, excess, updatesToSave)) {
+                break;
+            }
+            remainingTotal -= existingCFBucket.getCurrentBalance();
         }
+    }
+
+    private boolean adjustBucketForExcess(BucketInstance bucket, Long excess, List<BucketInstance> updatesToSave) {
+        if (excess < bucket.getCurrentBalance()) {
+            bucket.setCurrentBalance(bucket.getCurrentBalance() - excess);
+            updatesToSave.add(bucket);
+            return true;
+        }
+
+        bucket.setCurrentBalance(0L);
+        updatesToSave.add(bucket);
+        return false;
     }
 
     /**
