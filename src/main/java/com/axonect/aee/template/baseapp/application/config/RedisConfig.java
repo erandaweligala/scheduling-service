@@ -21,6 +21,7 @@ import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.RedisSentinelConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettucePoolingClientConfiguration;
@@ -65,10 +66,11 @@ public class RedisConfig {
 
     /**
      * Configure Lettuce Client Options with performance optimizations
+     * Includes Sentinel-specific reconnection settings
      */
     @Bean
     public ClientOptions lettuceClientOptions() {
-        log.info("Configuring Lettuce ClientOptions with performance optimizations");
+        log.info("Configuring Lettuce ClientOptions with performance optimizations for Sentinel");
 
         SocketOptions socketOptions = SocketOptions.builder()
                 .connectTimeout(Duration.ofSeconds(10))
@@ -76,13 +78,14 @@ public class RedisConfig {
                 .tcpNoDelay(true)  // Disable Nagle's algorithm for lower latency
                 .build();
 
-        TimeoutOptions timeoutOptions = TimeoutOptions.enabled(Duration.ofSeconds(10));
+        TimeoutOptions timeoutOptions = TimeoutOptions.enabled(Duration.ofSeconds(120));
 
         return ClientOptions.builder()
                 .socketOptions(socketOptions)
                 .timeoutOptions(timeoutOptions)
                 .protocolVersion(ProtocolVersion.RESP3)  // Use RESP3 protocol for better performance
-                .autoReconnect(true)
+                .autoReconnect(true)  // Enable auto-reconnection (reconnect-attempts: 3)
+                .suspendReconnectOnProtocolFailure(false)  // Continue reconnect on protocol failure
                 .cancelCommandsOnReconnectFailure(false)
                 .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
                 .publishOnScheduler(true)  // Use dedicated scheduler for pub/sub
@@ -120,7 +123,7 @@ public class RedisConfig {
     }
 
     /**
-     * Configure High-Performance Lettuce Connection Factory
+     * Configure High-Performance Lettuce Connection Factory with Sentinel Support
      * This replaces Jedis with Lettuce for better performance and pooling
      */
     @Bean
@@ -129,27 +132,74 @@ public class RedisConfig {
             ClientOptions clientOptions,
             GenericObjectPoolConfig<Object> poolConfig) {
 
-        log.info("Configuring high-performance LettuceConnectionFactory");
-        log.info("Redis host: {}, port: {}", redisProperties.getHost(), redisProperties.getPort());
+        log.info("Configuring high-performance LettuceConnectionFactory with Sentinel support");
 
-        // Redis standalone configuration
-        RedisStandaloneConfiguration redisConfig = new RedisStandaloneConfiguration();
-        redisConfig.setHostName(redisProperties.getHost());
-        redisConfig.setPort(redisProperties.getPort());
+        LettuceConnectionFactory factory;
 
-        if (redisProperties.getPassword() != null && !redisProperties.getPassword().isEmpty()) {
-            redisConfig.setPassword(redisProperties.getPassword());
+        // Check if Sentinel configuration is present
+        if (redisProperties.getSentinel() != null && redisProperties.getSentinel().getMaster() != null) {
+            log.info("Configuring Redis Sentinel mode");
+            log.info("Sentinel Master: {}", redisProperties.getSentinel().getMaster());
+            log.info("Sentinel Nodes: {}", redisProperties.getSentinel().getNodes());
+
+            // Redis Sentinel configuration
+            RedisSentinelConfiguration sentinelConfig = new RedisSentinelConfiguration()
+                    .master(redisProperties.getSentinel().getMaster());
+
+            // Add sentinel nodes
+            redisProperties.getSentinel().getNodes().forEach(node -> {
+                String[] parts = node.split(":");
+                if (parts.length == 2) {
+                    sentinelConfig.sentinel(parts[0], Integer.parseInt(parts[1]));
+                    log.info("Added Sentinel node: {}:{}", parts[0], parts[1]);
+                }
+            });
+
+            // Set password if configured
+            if (redisProperties.getPassword() != null && !redisProperties.getPassword().isEmpty()) {
+                sentinelConfig.setPassword(redisProperties.getPassword());
+                log.info("Redis password configured for Sentinel");
+            }
+
+            // Set database
+            sentinelConfig.setDatabase(redisProperties.getDatabase());
+
+            // Lettuce client configuration with pooling
+            LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
+                    .clientOptions(clientOptions)
+                    .clientResources(clientResources)
+                    .poolConfig(poolConfig)
+                    .commandTimeout(redisProperties.getTimeout())
+                    .build();
+
+            factory = new LettuceConnectionFactory(sentinelConfig, clientConfig);
+            log.info("LettuceConnectionFactory configured for Sentinel mode");
+
+        } else {
+            // Fallback to standalone configuration if Sentinel is not configured
+            log.info("Configuring Redis Standalone mode");
+            log.info("Redis host: {}, port: {}", redisProperties.getHost(), redisProperties.getPort());
+
+            RedisStandaloneConfiguration redisConfig = new RedisStandaloneConfiguration();
+            redisConfig.setHostName(redisProperties.getHost());
+            redisConfig.setPort(redisProperties.getPort());
+
+            if (redisProperties.getPassword() != null && !redisProperties.getPassword().isEmpty()) {
+                redisConfig.setPassword(redisProperties.getPassword());
+            }
+
+            // Lettuce client configuration with pooling
+            LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
+                    .clientOptions(clientOptions)
+                    .clientResources(clientResources)
+                    .poolConfig(poolConfig)
+                    .commandTimeout(redisProperties.getTimeout())
+                    .build();
+
+            factory = new LettuceConnectionFactory(redisConfig, clientConfig);
+            log.info("LettuceConnectionFactory configured for Standalone mode");
         }
 
-        // Lettuce client configuration with pooling
-        LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
-                .clientOptions(clientOptions)
-                .clientResources(clientResources)
-                .poolConfig(poolConfig)
-                .commandTimeout(redisProperties.getTimeout())
-                .build();
-
-        LettuceConnectionFactory factory = new LettuceConnectionFactory(redisConfig, clientConfig);
         factory.setShareNativeConnection(false);  // Don't share connections for better concurrency
         factory.setValidateConnection(true);
 
