@@ -65,19 +65,14 @@ public class UserCacheService {
             String json = future.get(5, TimeUnit.SECONDS);
 
             if (json != null) {
-                try {
-                    UserSessionData userData = objectMapper.readValue(json, UserSessionData.class);
+                UserSessionData userData = deserializeUserData(json, userId);
 
-                    if (log.isDebugEnabled()) {
-                        log.debug("User data retrieved for userId: {} in {} ms",
-                                userId, (System.currentTimeMillis() - startTime));
-                    }
-
-                    return userData;
-                } catch (Exception e) {
-                    log.error("Failed to deserialize user data for userId: {} - {}", userId, e.getMessage());
-                    throw new CacheSerializationException("Failed to deserialize user data", e);
+                if (log.isDebugEnabled()) {
+                    log.debug("User data retrieved for userId: {} in {} ms",
+                            userId, (System.currentTimeMillis() - startTime));
                 }
+
+                return userData;
             }
 
             if (log.isDebugEnabled()) {
@@ -85,6 +80,9 @@ public class UserCacheService {
             }
             return null;
 
+        } catch (CacheSerializationException e) {
+            // Rethrow serialization exceptions as-is
+            throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Thread interrupted while getting user data for userId: {}", userId, e);
@@ -95,6 +93,18 @@ public class UserCacheService {
         } catch (Exception e) {
             log.error("Failed to get user data for userId: {}", userId, e);
             throw new CacheOperationException("Failed to get user data for userId: " + userId, e);
+        }
+    }
+
+    /**
+     * Deserializes JSON string to UserSessionData object
+     */
+    private UserSessionData deserializeUserData(String json, String userId) {
+        try {
+            return objectMapper.readValue(json, UserSessionData.class);
+        } catch (Exception e) {
+            log.error("Failed to deserialize user data for userId: {} - {}", userId, e.getMessage());
+            throw new CacheSerializationException("Failed to deserialize user data", e);
         }
     }
 
