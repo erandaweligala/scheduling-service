@@ -85,6 +85,10 @@ public class UserCacheService {
             }
             return null;
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Thread interrupted while getting user data for userId: {}", userId, e);
+            throw new CacheOperationException("Thread interrupted while getting user data for userId: " + userId, e);
         } catch (java.util.concurrent.TimeoutException e) {
             log.error("Timeout getting user data for userId: {}", userId, e);
             throw new CacheTimeoutException("Timeout getting user data for userId: " + userId, e);
@@ -147,6 +151,10 @@ public class UserCacheService {
                 }
             }
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Thread interrupted while updating cache for user: {}", userId, e);
+            throw new CacheOperationException("Thread interrupted while updating cache for user: " + userId, e);
         } catch (java.util.concurrent.TimeoutException e) {
             log.error("Timeout updating cache for user: {}", userId, e);
             throw new CacheTimeoutException("Timeout updating cache for user: " + userId, e);
