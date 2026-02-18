@@ -4,6 +4,7 @@ import com.axonect.aee.template.baseapp.application.repository.BucketInstanceRep
 import com.axonect.aee.template.baseapp.application.repository.ChildTemplateTableRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotification;
+import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
@@ -22,6 +23,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -129,7 +131,6 @@ public class ExpiryNotificationService {
         while (hasMore) {
             Pageable pageable = PageRequest.of(page, batchSize);
             Page<BucketInstance> bucketPage = findBucketsExpiringBetween(targetExpiryStart, targetExpiryEnd, pageable);
-//todo need get Data from AAA_USER table user_name corresponding get templete_id = (CHILD_TEMPLATE_TABLE tablesuperTemplateId) need to fixed notication send template id related massages
             List<BucketInstance> buckets = bucketPage.getContent();
 
             if (buckets.isEmpty()) {
@@ -174,7 +175,9 @@ public class ExpiryNotificationService {
     }
 
     /**
-     * Send Kafka notification for a specific bucket instance
+     * Send Kafka notification for a specific bucket instance.
+     * Looks up the user's superTemplateId from Redis cache and only sends the notification
+     * if the template's superTemplateId matches the user's superTemplateId.
      *
      * @param bucket the bucket instance
      * @param template the message template
@@ -200,6 +203,23 @@ public class ExpiryNotificationService {
         String username = service.getUsername();
         String planName = service.getPlanName();
 
+        // Get user's superTemplateId from cache to match with the correct child template
+        UserSessionData userSessionData = userCacheService.getUserData(username);
+        if (userSessionData == null) {
+            log.warn("User session data not found in cache for username: {}. Skipping notification for bucket ID: {}",
+                    username, bucket.getId());
+            return;
+        }
+
+        long userSuperTemplateId = userSessionData.getSuperTemplateId();
+
+        // Only send notification if the template's superTemplateId matches the user's superTemplateId
+        if (!Objects.equals(template.getSuperTemplateId(), userSuperTemplateId)) {
+            log.debug("Template ID {} superTemplateId ({}) does not match user {} superTemplateId ({}). Skipping.",
+                    template.getId(), template.getSuperTemplateId(), username, userSuperTemplateId);
+            return;
+        }
+
         // Replace dynamic fields in message template
         String message = buildNotificationMessage(
                 template.getMessageContent(),
@@ -211,7 +231,7 @@ public class ExpiryNotificationService {
         // Build notification event
         BucketExpiryNotification notification = BucketExpiryNotification.builder()
                 .username(username)
-                .userId(null)  // Can be populated if needed from UserEntity
+                .userId(null)
                 .serviceId(service.getId())
                 .bucketInstanceId(bucket.getId())
                 .bucketId(bucket.getBucketId())
@@ -239,8 +259,8 @@ public class ExpiryNotificationService {
                         }
                     });
 
-            log.info("Notification sent for username: {}, plan: {}, expires on: {}, days remaining: {}",
-                    username, planName, expiryDate, daysToExpire);
+            log.info("Notification sent for username: {}, plan: {}, template: {}, expires on: {}, days remaining: {}",
+                    username, planName, template.getId(), expiryDate, daysToExpire);
 
         } catch (Exception e) {
             log.error("Error sending Kafka message for bucket ID: {}", bucket.getId(), e);

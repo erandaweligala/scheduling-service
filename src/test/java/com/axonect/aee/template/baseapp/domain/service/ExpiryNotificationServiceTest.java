@@ -4,6 +4,7 @@ import com.axonect.aee.template.baseapp.application.repository.BucketInstanceRep
 import com.axonect.aee.template.baseapp.application.repository.ChildTemplateTableRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotification;
+import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
@@ -77,14 +78,15 @@ class ExpiryNotificationServiceTest {
     }
 
     @Test
-    @DisplayName("Process - Happy path with dynamic message replacement")
+    @DisplayName("Process - Happy path with dynamic message replacement and superTemplateId matching")
     void processExpiryNotifications_Success() {
-        // 1. Setup Template
+        // 1. Setup Template with superTemplateId
         ChildTemplateTable template = new ChildTemplateTable();
         template.setId(1L);
         template.setDaysToExpire(2);
         template.setMessageContent("Plan {PLAN_NAME} expires on {DATE_OF_EXPIRY} in {DAYS_TO_EXPIRE} days.");
         template.setMessageType("SMS");
+        template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
         // 2. Setup Bucket
@@ -106,7 +108,12 @@ class ExpiryNotificationServiceTest {
         service.setPlanName("Premium_Plan");
         when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
 
-        // 4. Mock Kafka Success
+        // 4. Setup UserSessionData with matching superTemplateId
+        UserSessionData userSessionData = new UserSessionData();
+        userSessionData.setSuperTemplateId(5L);
+        when(userCacheService.getUserData("user_01")).thenReturn(userSessionData);
+
+        // 5. Mock Kafka Success
         when(kafkaTemplate.send(anyString(), anyString(), any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -123,6 +130,88 @@ class ExpiryNotificationServiceTest {
         String sentMessage = captor.getValue().getMessage();
         assertTrue(sentMessage.contains("Premium_Plan"));
         assertTrue(sentMessage.contains("2 days"));
+        assertEquals(1L, captor.getValue().getTemplateId());
+    }
+
+    @Test
+    @DisplayName("Process - Notification skipped when superTemplateId does not match")
+    void processExpiryNotifications_SuperTemplateIdMismatch() {
+        // 1. Setup Template with superTemplateId = 5
+        ChildTemplateTable template = new ChildTemplateTable();
+        template.setId(1L);
+        template.setDaysToExpire(2);
+        template.setMessageContent("Plan {PLAN_NAME} expires.");
+        template.setMessageType("SMS");
+        template.setSuperTemplateId(5L);
+        when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
+
+        // 2. Setup Bucket
+        BucketInstance bucket = new BucketInstance();
+        bucket.setId(101L);
+        bucket.setServiceId(201L);
+        bucket.setExpiration(LocalDateTime.now().plusDays(2));
+        bucket.setCurrentBalance(50L);
+        bucket.setInitialBalance(100L);
+
+        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(bucket)));
+
+        // 3. Setup Service Instance
+        ServiceInstance service = new ServiceInstance();
+        service.setId(201L);
+        service.setUsername("user_01");
+        service.setPlanName("Basic_Plan");
+        when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
+
+        // 4. Setup UserSessionData with DIFFERENT superTemplateId (3 != 5)
+        UserSessionData userSessionData = new UserSessionData();
+        userSessionData.setSuperTemplateId(3L);
+        when(userCacheService.getUserData("user_01")).thenReturn(userSessionData);
+
+        // Execute
+        int result = expiryNotificationService.processExpiryNotifications();
+
+        // Notification count still increments (sendNotificationForBucket returns without exception)
+        assertEquals(1, result);
+
+        // But Kafka should NOT be called since superTemplateId didn't match
+        verifyNoInteractions(kafkaTemplate);
+    }
+
+    @Test
+    @DisplayName("Process - Notification skipped when user session data not in cache")
+    void processExpiryNotifications_UserSessionDataNotFound() {
+        // 1. Setup Template
+        ChildTemplateTable template = new ChildTemplateTable();
+        template.setId(1L);
+        template.setDaysToExpire(1);
+        template.setSuperTemplateId(5L);
+        when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
+
+        // 2. Setup Bucket
+        BucketInstance bucket = new BucketInstance();
+        bucket.setId(101L);
+        bucket.setServiceId(201L);
+        bucket.setExpiration(LocalDateTime.now().plusDays(1));
+
+        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(bucket)));
+
+        // 3. Setup Service Instance
+        ServiceInstance service = new ServiceInstance();
+        service.setId(201L);
+        service.setUsername("user_missing_cache");
+        when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
+
+        // 4. User not found in cache
+        when(userCacheService.getUserData("user_missing_cache")).thenReturn(null);
+
+        // Execute
+        int result = expiryNotificationService.processExpiryNotifications();
+
+        // Counter increments but no Kafka sent
+        assertEquals(1, result);
+        verifyNoInteractions(kafkaTemplate);
     }
 
     @Test
@@ -150,6 +239,7 @@ class ExpiryNotificationServiceTest {
     void processExpiryNotifications_KafkaError() {
         ChildTemplateTable template = new ChildTemplateTable();
         template.setDaysToExpire(1);
+        template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
         BucketInstance bucket = new BucketInstance();
@@ -160,6 +250,11 @@ class ExpiryNotificationServiceTest {
         ServiceInstance service = new ServiceInstance();
         service.setUsername("user_error");
         when(serviceInstanceRepository.findById(anyLong())).thenReturn(Optional.of(service));
+
+        // Setup UserSessionData with matching superTemplateId
+        UserSessionData userSessionData = new UserSessionData();
+        userSessionData.setSuperTemplateId(5L);
+        when(userCacheService.getUserData("user_error")).thenReturn(userSessionData);
 
         // Throw exception during Kafka send
         when(kafkaTemplate.send(anyString(), anyString(), any())).thenThrow(new RuntimeException("Kafka Down"));
@@ -189,6 +284,7 @@ class ExpiryNotificationServiceTest {
         ChildTemplateTable template = new ChildTemplateTable();
         template.setDaysToExpire(1);
         template.setMessageContent(null);
+        template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
         BucketInstance bucket = new BucketInstance();
@@ -200,6 +296,11 @@ class ExpiryNotificationServiceTest {
         ServiceInstance service = new ServiceInstance();
         service.setUsername("user");
         when(serviceInstanceRepository.findById(anyLong())).thenReturn(Optional.of(service));
+
+        // Setup UserSessionData with matching superTemplateId
+        UserSessionData userSessionData = new UserSessionData();
+        userSessionData.setSuperTemplateId(5L);
+        when(userCacheService.getUserData("user")).thenReturn(userSessionData);
 
         expiryNotificationService.processExpiryNotifications();
 
