@@ -62,6 +62,8 @@ public class ExpiryNotificationService {
      *
      * @return total number of notifications sent
      */
+
+
     @Transactional(readOnly = true)
     public int processExpiryNotifications() {
         log.info("Starting expiry notification processing...");
@@ -127,7 +129,7 @@ public class ExpiryNotificationService {
         while (hasMore) {
             Pageable pageable = PageRequest.of(page, batchSize);
             Page<BucketInstance> bucketPage = findBucketsExpiringBetween(targetExpiryStart, targetExpiryEnd, pageable);
-
+//todo need get Data from AAA_USER table user_name corresponding get templete_id = (CHILD_TEMPLATE_TABLE tablesuperTemplateId) need to fixed notication send template id related massages
             List<BucketInstance> buckets = bucketPage.getContent();
 
             if (buckets.isEmpty()) {

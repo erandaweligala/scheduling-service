@@ -6,6 +6,7 @@ import com.axonect.aee.template.baseapp.domain.exception.CacheSerializationExcep
 import com.axonect.aee.template.baseapp.domain.exception.CacheTimeoutException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.retry.annotation.Backoff;
@@ -77,19 +78,13 @@ public class UserCacheService {
 
         } catch (CacheSerializationException e) {
             throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Thread interrupted while getting user data for userId: {}", userId, e);
-            throw new CacheOperationException("Thread interrupted while getting user data for userId: " + userId, e);
-        } catch (java.util.concurrent.TimeoutException e) {
-            log.error("Timeout getting user data for userId: {}", userId, e);
-            throw new CacheTimeoutException("Timeout getting user data for userId: " + userId, e);
         } catch (Exception e) {
             log.error("Failed to get user data for userId: {}", userId, e);
             throw new CacheOperationException("Failed to get user data for userId: " + userId, e);
         }
     }
 
+    @SuppressWarnings("java:S112")
     private String fetchUserDataFromRedis(String key) throws Exception {
         CompletableFuture<String> future = CompletableFuture.supplyAsync(() ->
                 redisTemplateString.opsForValue().get(key), executorService);
@@ -116,6 +111,7 @@ public class UserCacheService {
             maxAttempts = 2,  // maxRetries=1 means 1 retry + 1 original = 2 attempts
             backoff = @Backoff(delay = 30)
     )
+    @SneakyThrows
     public void updateUserAndRelatedCaches(String userId, UserSessionData userData, String userName) {
         if (log.isDebugEnabled()) {
             log.debug("Updating user data and related caches for userId: {}", userId);
@@ -137,12 +133,6 @@ public class UserCacheService {
             Thread.currentThread().interrupt();
             log.error("Thread interrupted while updating cache for user: {}", userId, e);
             throw new CacheOperationException("Thread interrupted while updating cache for user: " + userId, e);
-        } catch (java.util.concurrent.TimeoutException e) {
-            log.error("Timeout updating cache for user: {}", userId, e);
-            throw new CacheTimeoutException("Timeout updating cache for user: " + userId, e);
-        } catch (Exception e) {
-            log.error("Failed to update cache for user: {}", userId, e);
-            throw new CacheOperationException("Failed to serialize or update user data for userId: " + userId, e);
         }
     }
 

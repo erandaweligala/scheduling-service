@@ -139,6 +139,9 @@ expiry-notification:
   batch-size: 100                              # Number of bucket instances to process per batch
   schedule: "0 0 9 * * ?"                      # Run daily at 9:00 AM
 
+service-renewal:
+  schedule: "0 30 0 * * ?"
+
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:
   bootstrap-servers: localhost:9092            # Kafka broker addresses (comma-separated for cluster)

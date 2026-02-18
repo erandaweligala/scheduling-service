@@ -77,7 +77,6 @@ spring:
       key-prefix: "scheduling-service:"
   datasource:
     url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
-#    url: jdbc:oracle:thin:@localhost:1522/ORCL
     username: aaa
     password: Aaa!89nky78D
     driver-class-name: oracle.jdbc.OracleDriver
@@ -133,6 +132,10 @@ expiry-notification:
   batch-size: 100                              # Number of bucket instances to process per batch
   schedule: "0 0 9 * * ?"                      # Run daily at 9:00 AM
 
+#Service Renewal Configuration
+service-renewal:
+  schedule: "0 30 0 * * ?"
+  
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:
   bootstrap-servers: kafka-headless.cluster-one.svc.cluster.local:9092            # Kafka broker addresses (comma-separated for cluster)

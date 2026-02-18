@@ -74,7 +74,7 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-    //todo need to set scheduling proccess 12.30AM time
+    @Scheduled(cron = "${service-renewal.schedule:0 30 0 * * ?}")
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
         String batchId = UUID.randomUUID().toString();
