@@ -11,8 +11,8 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 /**
- * Kafka event payload for bucket expiry notifications
- * Sent to notify users about upcoming bucket/plan expirations
+ * Kafka event payload for service expiry notifications
+ * Sent to notify users about upcoming service/plan expirations based on CYCLE_END_DATE
  */
 @Data
 @NoArgsConstructor
@@ -41,25 +41,13 @@ public class BucketExpiryNotification implements Serializable {
     private Long serviceId;
 
     /**
-     * Bucket instance ID
-     */
-    @JsonProperty("bucket_instance_id")
-    private Long bucketInstanceId;
-
-    /**
-     * Bucket ID
-     */
-    @JsonProperty("bucket_id")
-    private String bucketId;
-
-    /**
      * Plan name (dynamic field in message)
      */
     @JsonProperty("plan_name")
     private String planName;
 
     /**
-     * Date when the bucket/plan expires
+     * Date when the service/plan cycle ends (CYCLE_END_DATE)
      */
     @JsonProperty("date_of_expiry")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
@@ -97,15 +85,4 @@ public class BucketExpiryNotification implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime notificationTime;
 
-    /**
-     * Current balance remaining in bucket
-     */
-    @JsonProperty("current_balance")
-    private Long currentBalance;
-
-    /**
-     * Initial balance of bucket
-     */
-    @JsonProperty("initial_balance")
-    private Long initialBalance;
 }
