@@ -130,6 +130,7 @@ public class ExpiryNotificationService {
         // Process in batches to handle large datasets
         while (hasMore) {
             Pageable pageable = PageRequest.of(page, batchSize);
+            //todo no need to check BucketsExpiring can direct get ServiceInstance get CYCLE_END_DATE pls modify this code
             Page<BucketInstance> bucketPage = findBucketsExpiringBetween(targetExpiryStart, targetExpiryEnd, pageable);
             List<BucketInstance> buckets = bucketPage.getContent();
 
