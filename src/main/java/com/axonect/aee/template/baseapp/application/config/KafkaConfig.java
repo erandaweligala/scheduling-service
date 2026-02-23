@@ -1,13 +1,20 @@
 package com.axonect.aee.template.baseapp.application.config;
 
+import com.axonect.aee.template.baseapp.domain.entities.dto.FttxExpiryEvent;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 
 import java.util.HashMap;
@@ -22,6 +29,9 @@ public class KafkaConfig {
 
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
+
+    @Value("${spring.kafka.consumer.group-id:scheduling-service-group}")
+    private String consumerGroupId;
 
     @Value("${spring.kafka.producer.retries:3}")
     private Integer retries;
@@ -88,5 +98,54 @@ public class KafkaConfig {
         return new KafkaTemplate<>(producerFactory());
     }
 
+    // -------------------------------------------------------------------------
+    // Consumer configuration — used by FttxExpiryConsumerService
+    // -------------------------------------------------------------------------
 
+    /**
+     * Consumer configuration for deserializing {@link FttxExpiryEvent} messages.
+     *
+     * @return consumer configuration map
+     */
+    @Bean
+    public Map<String, Object> consumerConfigs() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroupId);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.axonect.aee.template.baseapp.domain.entities.dto");
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, FttxExpiryEvent.class.getName());
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false);
+        return props;
+    }
+
+    /**
+     * Consumer factory that produces {@link FttxExpiryEvent} instances.
+     *
+     * @return consumer factory
+     */
+    @Bean
+    public ConsumerFactory<String, FttxExpiryEvent> consumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(
+                consumerConfigs(),
+                new StringDeserializer(),
+                new JsonDeserializer<>(FttxExpiryEvent.class, false)
+        );
+    }
+
+    /**
+     * Listener container factory used by {@code @KafkaListener} methods
+     * that consume {@link FttxExpiryEvent} messages.
+     *
+     * @return listener container factory
+     */
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, FttxExpiryEvent> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, FttxExpiryEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
 }
