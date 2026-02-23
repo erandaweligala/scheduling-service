@@ -172,7 +172,7 @@ public class ExpiryNotificationService {
         String username = service.getUsername();
         String planName = service.getPlanName();
 
-        // Get user's superTemplateId from cache to match with the correct child template
+        // todo need to get without cache get AAA_USER Table TEMPLATE_ID
         UserSessionData userSessionData = userCacheService.getUserData(username);
         if (userSessionData == null) {
             log.warn("User session data not found in cache for username: {}. Skipping notification for service ID: {}",
