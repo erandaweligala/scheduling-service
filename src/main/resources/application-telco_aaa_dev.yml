@@ -49,7 +49,7 @@ spring:
       sentinel:
         master: mymaster  # Sentinel master name
         nodes:
-          - redis-cluster-headless.csg-aaa-query-cache.svc.cluster.local:26379  # Sentinel node(s)
+          - redis-cluster-headless.csg-aaa-query-cache.svc.cluster.local:26379 # Sentinel node(s)
       password: S3cure_Redis_Pass_w0rd!  # Redis authentication password
       database: 0  # Redis database index
       timeout: 120000ms  # Command timeout (120 seconds)
@@ -58,7 +58,7 @@ spring:
       lettuce:
         pool:
           # Connection pool configuration for high performance with Sentinel
-          max-active: 600     # Maximum active connections in pool (max-pool-size)
+          max-active: 150     # Maximum active connections in pool (max-pool-size)
           max-idle: 300       # Maximum idle connections in pool
           min-idle: 50        # Minimum idle connections in pool (keep connections ready)
           max-wait: 3000ms    # Maximum time to wait for connection from pool (max-pool-waiting)

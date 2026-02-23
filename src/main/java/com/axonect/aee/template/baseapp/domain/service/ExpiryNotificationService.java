@@ -1,11 +1,9 @@
 package com.axonect.aee.template.baseapp.domain.service;
 
-import com.axonect.aee.template.baseapp.application.repository.BucketInstanceRepository;
 import com.axonect.aee.template.baseapp.application.repository.ChildTemplateTableRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotification;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
-import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
 import com.axonect.aee.template.baseapp.domain.exception.NotificationProcessingException;
@@ -24,16 +22,15 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
- * Service for processing and sending bucket expiry notifications via Kafka
+ * Service for processing and sending expiry notifications via Kafka
  *
  * Workflow:
  * 1. Fetch all EXPIRE type templates from CHILD_TEMPLATE_TABLE
  * 2. For each template with DAYS_TO_EXPIRE configuration:
  *    - Calculate the target expiry date (today + DAYS_TO_EXPIRE)
- *    - Find bucket instances expiring on that date
+ *    - Find service instances with CYCLE_END_DATE on that date
  *    - Get user and plan information from ServiceInstance
  *    - Replace dynamic fields in message template
  *    - Send Kafka notification event
@@ -44,7 +41,6 @@ import java.util.Optional;
 public class ExpiryNotificationService {
 
     private final ChildTemplateTableRepository childTemplateTableRepository;
-    private final BucketInstanceRepository bucketInstanceRepository;
     private final ServiceInstanceRepository serviceInstanceRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final UserCacheService userCacheService;
@@ -56,7 +52,6 @@ public class ExpiryNotificationService {
     private Integer batchSize;
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /**
      * Process and send expiry notifications for all configured EXPIRE templates
@@ -64,8 +59,6 @@ public class ExpiryNotificationService {
      *
      * @return total number of notifications sent
      */
-
-
     @Transactional(readOnly = true)
     public int processExpiryNotifications() {
         log.info("Starting expiry notification processing...");
@@ -105,7 +98,8 @@ public class ExpiryNotificationService {
     }
 
     /**
-     * Process notifications for a specific template configuration
+     * Process notifications for a specific template configuration.
+     * Directly queries ServiceInstance by CYCLE_END_DATE instead of going through BucketInstance.
      *
      * @param template the child template with DAYS_TO_EXPIRE configuration
      * @return number of notifications sent for this template
@@ -116,12 +110,12 @@ public class ExpiryNotificationService {
 
         // Calculate target expiry date
         // Example: If DAYS_TO_EXPIRE = 2 and today is 2026-01-28, target date is 2026-01-30
-        // We want to notify about buckets expiring on 2026-01-30
+        // We want to notify about services with CYCLE_END_DATE on 2026-01-30
         LocalDate targetExpiryDate = LocalDate.now().plusDays(daysToExpire);
         LocalDateTime targetExpiryStart = targetExpiryDate.atStartOfDay();
         LocalDateTime targetExpiryEnd = targetExpiryDate.plusDays(1).atStartOfDay();
 
-        log.info("Looking for bucket instances expiring on: {}", targetExpiryDate);
+        log.info("Looking for service instances with CYCLE_END_DATE on: {}", targetExpiryDate);
 
         int notificationsSent = 0;
         int page = 0;
@@ -130,28 +124,28 @@ public class ExpiryNotificationService {
         // Process in batches to handle large datasets
         while (hasMore) {
             Pageable pageable = PageRequest.of(page, batchSize);
-            //todo no need to check BucketsExpiring can direct get ServiceInstance get CYCLE_END_DATE pls modify this code
-            Page<BucketInstance> bucketPage = findBucketsExpiringBetween(targetExpiryStart, targetExpiryEnd, pageable);
-            List<BucketInstance> buckets = bucketPage.getContent();
+            Page<ServiceInstance> servicePage = serviceInstanceRepository
+                    .findByServiceCycleEndDateBetween(targetExpiryStart, targetExpiryEnd, pageable);
+            List<ServiceInstance> services = servicePage.getContent();
 
-            if (buckets.isEmpty()) {
+            if (services.isEmpty()) {
                 hasMore = false;
                 continue;
             }
 
-            log.info("Processing page {} with {} bucket instances", page, buckets.size());
+            log.info("Processing page {} with {} service instances", page, services.size());
 
-            for (BucketInstance bucket : buckets) {
+            for (ServiceInstance service : services) {
                 try {
-                    sendNotificationForBucket(bucket, template, daysToExpire, targetExpiryDate);
+                    sendNotificationForService(service, template, daysToExpire, targetExpiryDate);
                     notificationsSent++;
                 } catch (Exception e) {
-                    log.error("Failed to send notification for bucket instance ID: {}", bucket.getId(), e);
-                    // Continue processing other buckets even if one fails
+                    log.error("Failed to send notification for service instance ID: {}", service.getId(), e);
+                    // Continue processing other services even if one fails
                 }
             }
 
-            hasMore = bucketPage.hasNext();
+            hasMore = servicePage.hasNext();
             page++;
         }
 
@@ -160,55 +154,29 @@ public class ExpiryNotificationService {
     }
 
     /**
-     * Find bucket instances that expire within a specific date range
-     *
-     * @param startDateTime start of expiry date range
-     * @param endDateTime end of expiry date range
-     * @param pageable pagination information
-     * @return page of bucket instances
-     */
-    private Page<BucketInstance> findBucketsExpiringBetween(
-            LocalDateTime startDateTime,
-            LocalDateTime endDateTime,
-            Pageable pageable) {
-
-        return bucketInstanceRepository.findBucketsExpiringBetween(startDateTime, endDateTime, pageable);
-    }
-
-    /**
-     * Send Kafka notification for a specific bucket instance.
+     * Send Kafka notification for a specific service instance.
      * Looks up the user's superTemplateId from Redis cache and only sends the notification
      * if the template's superTemplateId matches the user's superTemplateId.
      *
-     * @param bucket the bucket instance
+     * @param service the service instance
      * @param template the message template
      * @param daysToExpire days until expiry
      * @param expiryDate the expiry date
      */
-    private void sendNotificationForBucket(
-            BucketInstance bucket,
+    private void sendNotificationForService(
+            ServiceInstance service,
             ChildTemplateTable template,
             int daysToExpire,
             LocalDate expiryDate) {
 
-        // Get service instance to retrieve username and plan name
-        Optional<ServiceInstance> serviceOpt = serviceInstanceRepository.findById(bucket.getServiceId());
-
-        if (serviceOpt.isEmpty()) {
-            log.warn("Service instance not found for bucket ID: {}. Service ID: {}",
-                    bucket.getId(), bucket.getServiceId());
-            return;
-        }
-
-        ServiceInstance service = serviceOpt.get();
         String username = service.getUsername();
         String planName = service.getPlanName();
 
         // Get user's superTemplateId from cache to match with the correct child template
         UserSessionData userSessionData = userCacheService.getUserData(username);
         if (userSessionData == null) {
-            log.warn("User session data not found in cache for username: {}. Skipping notification for bucket ID: {}",
-                    username, bucket.getId());
+            log.warn("User session data not found in cache for username: {}. Skipping notification for service ID: {}",
+                    username, service.getId());
             return;
         }
 
@@ -225,7 +193,7 @@ public class ExpiryNotificationService {
         String message = buildNotificationMessage(
                 template.getMessageContent(),
                 planName,
-                bucket.getExpiration(),
+                service.getServiceCycleEndDate(),
                 daysToExpire
         );
 
@@ -234,29 +202,26 @@ public class ExpiryNotificationService {
                 .username(username)
                 .userId(null)
                 .serviceId(service.getId())
-                .bucketInstanceId(bucket.getId())
-                .bucketId(bucket.getBucketId())
                 .planName(planName)
-                .dateOfExpiry(bucket.getExpiration())
+                .dateOfExpiry(service.getServiceCycleEndDate())
                 .daysToExpire(daysToExpire)
                 .message(message)
                 .messageType(template.getMessageType())
                 .templateId(template.getId())
                 .notificationTime(LocalDateTime.now())
-                .currentBalance(bucket.getCurrentBalance())
-                .initialBalance(bucket.getInitialBalance())
                 .build();
 
+        log.info("message : {}",message);
         // Send to Kafka topic
         try {
             kafkaTemplate.send(bucketExpiryTopic, username, notification)
                     .whenComplete((result, ex) -> {
                         if (ex != null) {
-                            log.error("Failed to send Kafka notification for username: {}, bucket ID: {}",
-                                    username, bucket.getId(), ex);
+                            log.error("Failed to send Kafka notification for username: {}, service ID: {}",
+                                    username, service.getId(), ex);
                         } else {
-                            log.debug("Successfully sent notification to Kafka for username: {}, bucket ID: {}",
-                                    username, bucket.getId());
+                            log.debug("Successfully sent notification to Kafka for username: {}, service ID: {}",
+                                    username, service.getId());
                         }
                     });
 
@@ -264,7 +229,7 @@ public class ExpiryNotificationService {
                     username, planName, template.getId(), expiryDate, daysToExpire);
 
         } catch (Exception e) {
-            log.error("Error sending Kafka message for bucket ID: {}", bucket.getId(), e);
+            log.error("Error sending Kafka message for service ID: {}", service.getId(), e);
             throw e;
         }
     }
