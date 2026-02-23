@@ -130,4 +130,7 @@ public class UserEntity implements Serializable {
     @Column(name = "UPDATED_DATE")
     private LocalDateTime updatedDate;
 
+    @Column(name = "TEMPLATE_ID")
+    private Long templateId;
+
 }

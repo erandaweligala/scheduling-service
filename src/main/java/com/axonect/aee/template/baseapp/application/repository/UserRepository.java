@@ -24,4 +24,7 @@ public interface UserRepository extends JpaRepository<UserEntity, String> {
 
     @Cacheable(value = "users", key = "#userNames.toString()", unless = "#result == null || #result.isEmpty()")
     List<UserEntity> findByUserNameIn(Set<String> userNames);
+
+    @Query("SELECT u.templateId FROM UserEntity u WHERE u.userName = :userName")
+    Long findTemplateIdByUserName(@Param("userName") String userName);
 }

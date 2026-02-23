@@ -2,6 +2,7 @@ package com.axonect.aee.template.baseapp.domain.service;
 
 import com.axonect.aee.template.baseapp.application.repository.ChildTemplateTableRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
+import com.axonect.aee.template.baseapp.application.repository.UserRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotification;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
@@ -44,6 +45,7 @@ public class ExpiryNotificationService {
     private final ServiceInstanceRepository serviceInstanceRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final UserCacheService userCacheService;
+    private final UserRepository userRepository;
 
     @Value("${kafka.topic.bucket-expiry-notification:bucket-expiry-notifications}")
     private String bucketExpiryTopic;
@@ -172,15 +174,22 @@ public class ExpiryNotificationService {
         String username = service.getUsername();
         String planName = service.getPlanName();
 
-        // todo need to get without cache get AAA_USER Table TEMPLATE_ID
-        UserSessionData userSessionData = userCacheService.getUserData(username);
-        if (userSessionData == null) {
-            log.warn("User session data not found in cache for username: {}. Skipping notification for service ID: {}",
-                    username, service.getId());
-            return;
-        }
+        long userSuperTemplateId;
 
-        long userSuperTemplateId = userSessionData.getSuperTemplateId();
+        UserSessionData userSessionData = userCacheService.getUserData(username);
+        if (userSessionData != null) {
+            userSuperTemplateId = userSessionData.getSuperTemplateId();
+        } else {
+            log.debug("User session data not found in cache for username: {}. Falling back to AAA_USER table lookup for service ID: {}",
+                    username, service.getId());
+            Long dbTemplateId = userRepository.findTemplateIdByUserName(username);
+            if (dbTemplateId == null) {
+                log.warn("TEMPLATE_ID not found in AAA_USER table for username: {}. Skipping notification for service ID: {}",
+                        username, service.getId());
+                return;
+            }
+            userSuperTemplateId = dbTemplateId;
+        }
 
         // Only send notification if the template's superTemplateId matches the user's superTemplateId
         if (!Objects.equals(template.getSuperTemplateId(), userSuperTemplateId)) {
