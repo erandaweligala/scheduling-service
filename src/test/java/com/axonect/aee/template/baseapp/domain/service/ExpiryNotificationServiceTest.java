@@ -1,11 +1,9 @@
 package com.axonect.aee.template.baseapp.domain.service;
 
-import com.axonect.aee.template.baseapp.application.repository.BucketInstanceRepository;
 import com.axonect.aee.template.baseapp.application.repository.ChildTemplateTableRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.BucketExpiryNotification;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
-import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ChildTemplateTable;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
 import com.axonect.aee.template.baseapp.domain.exception.NotificationProcessingException;
@@ -25,7 +23,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,7 +33,6 @@ import static org.mockito.Mockito.*;
 class ExpiryNotificationServiceTest {
 
     @Mock private ChildTemplateTableRepository childTemplateTableRepository;
-    @Mock private BucketInstanceRepository bucketInstanceRepository;
     @Mock private ServiceInstanceRepository serviceInstanceRepository;
     @Mock private KafkaTemplate<String, Object> kafkaTemplate;
     @Mock private UserCacheService userCacheService;
@@ -59,7 +55,7 @@ class ExpiryNotificationServiceTest {
         int result = expiryNotificationService.processExpiryNotifications();
 
         assertEquals(0, result);
-        verifyNoInteractions(bucketInstanceRepository);
+        verifyNoInteractions(serviceInstanceRepository);
     }
 
     @Test
@@ -74,7 +70,7 @@ class ExpiryNotificationServiceTest {
         int result = expiryNotificationService.processExpiryNotifications();
 
         assertEquals(0, result);
-        verifyNoInteractions(bucketInstanceRepository);
+        verifyNoInteractions(serviceInstanceRepository);
     }
 
     @Test
@@ -89,31 +85,23 @@ class ExpiryNotificationServiceTest {
         template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        // 2. Setup Bucket
-        BucketInstance bucket = new BucketInstance();
-        bucket.setId(101L);
-        bucket.setServiceId(201L);
-        bucket.setExpiration(LocalDateTime.now().plusDays(2));
-        bucket.setCurrentBalance(50L);
-        bucket.setInitialBalance(100L);
-
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket))) // First page
-                .thenReturn(new PageImpl<>(Collections.emptyList())); // End of pagination
-
-        // 3. Setup Service Instance
+        // 2. Setup Service Instance with CYCLE_END_DATE
         ServiceInstance service = new ServiceInstance();
         service.setId(201L);
         service.setUsername("user_01");
         service.setPlanName("Premium_Plan");
-        when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
+        service.setServiceCycleEndDate(LocalDateTime.now().plusDays(2));
 
-        // 4. Setup UserSessionData with matching superTemplateId
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(service))) // First page
+                .thenReturn(new PageImpl<>(Collections.emptyList())); // End of pagination
+
+        // 3. Setup UserSessionData with matching superTemplateId
         UserSessionData userSessionData = new UserSessionData();
         userSessionData.setSuperTemplateId(5L);
         when(userCacheService.getUserData("user_01")).thenReturn(userSessionData);
 
-        // 5. Mock Kafka Success
+        // 4. Mock Kafka Success
         when(kafkaTemplate.send(anyString(), anyString(), any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -145,25 +133,17 @@ class ExpiryNotificationServiceTest {
         template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        // 2. Setup Bucket
-        BucketInstance bucket = new BucketInstance();
-        bucket.setId(101L);
-        bucket.setServiceId(201L);
-        bucket.setExpiration(LocalDateTime.now().plusDays(2));
-        bucket.setCurrentBalance(50L);
-        bucket.setInitialBalance(100L);
-
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket)));
-
-        // 3. Setup Service Instance
+        // 2. Setup Service Instance with CYCLE_END_DATE
         ServiceInstance service = new ServiceInstance();
         service.setId(201L);
         service.setUsername("user_01");
         service.setPlanName("Basic_Plan");
-        when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
+        service.setServiceCycleEndDate(LocalDateTime.now().plusDays(2));
 
-        // 4. Setup UserSessionData with DIFFERENT superTemplateId (3 != 5)
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(service)));
+
+        // 3. Setup UserSessionData with DIFFERENT superTemplateId (3 != 5)
         UserSessionData userSessionData = new UserSessionData();
         userSessionData.setSuperTemplateId(3L);
         when(userCacheService.getUserData("user_01")).thenReturn(userSessionData);
@@ -171,7 +151,7 @@ class ExpiryNotificationServiceTest {
         // Execute
         int result = expiryNotificationService.processExpiryNotifications();
 
-        // Notification count still increments (sendNotificationForBucket returns without exception)
+        // Notification count still increments (sendNotificationForService returns without exception)
         assertEquals(1, result);
 
         // But Kafka should NOT be called since superTemplateId didn't match
@@ -188,22 +168,16 @@ class ExpiryNotificationServiceTest {
         template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        // 2. Setup Bucket
-        BucketInstance bucket = new BucketInstance();
-        bucket.setId(101L);
-        bucket.setServiceId(201L);
-        bucket.setExpiration(LocalDateTime.now().plusDays(1));
-
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket)));
-
-        // 3. Setup Service Instance
+        // 2. Setup Service Instance with CYCLE_END_DATE
         ServiceInstance service = new ServiceInstance();
         service.setId(201L);
         service.setUsername("user_missing_cache");
-        when(serviceInstanceRepository.findById(201L)).thenReturn(Optional.of(service));
+        service.setServiceCycleEndDate(LocalDateTime.now().plusDays(1));
 
-        // 4. User not found in cache
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(service)));
+
+        // 3. User not found in cache
         when(userCacheService.getUserData("user_missing_cache")).thenReturn(null);
 
         // Execute
@@ -215,22 +189,18 @@ class ExpiryNotificationServiceTest {
     }
 
     @Test
-    @DisplayName("Process - Service Instance missing")
-    void processExpiryNotifications_ServiceNotFound() {
+    @DisplayName("Process - No service instances found with matching CYCLE_END_DATE")
+    void processExpiryNotifications_NoServicesFound() {
         ChildTemplateTable template = new ChildTemplateTable();
         template.setDaysToExpire(1);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        BucketInstance bucket = new BucketInstance();
-        bucket.setServiceId(999L);
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket)));
-
-        when(serviceInstanceRepository.findById(999L)).thenReturn(Optional.empty());
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(Collections.emptyList()));
 
         int result = expiryNotificationService.processExpiryNotifications();
 
-        assertEquals(1, result); // No notification sent because service was missing
+        assertEquals(0, result);
         verifyNoInteractions(kafkaTemplate);
     }
 
@@ -242,14 +212,13 @@ class ExpiryNotificationServiceTest {
         template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        BucketInstance bucket = new BucketInstance();
-        bucket.setServiceId(201L);
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket)));
-
         ServiceInstance service = new ServiceInstance();
+        service.setId(201L);
         service.setUsername("user_error");
-        when(serviceInstanceRepository.findById(anyLong())).thenReturn(Optional.of(service));
+        service.setServiceCycleEndDate(LocalDateTime.now().plusDays(1));
+
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(service)));
 
         // Setup UserSessionData with matching superTemplateId
         UserSessionData userSessionData = new UserSessionData();
@@ -279,23 +248,20 @@ class ExpiryNotificationServiceTest {
     @Test
     @DisplayName("BuildMessage - Null template handles gracefully")
     void buildNotificationMessage_NullTemplate() {
-        // Using reflection or a wrapper if private, but here we can trigger it
-        // by making a bucket with a template that has null content.
+        // Trigger with a template that has null content
         ChildTemplateTable template = new ChildTemplateTable();
         template.setDaysToExpire(1);
         template.setMessageContent(null);
         template.setSuperTemplateId(5L);
         when(childTemplateTableRepository.findAllExpireTemplates()).thenReturn(List.of(template));
 
-        BucketInstance bucket = new BucketInstance();
-        bucket.setServiceId(201L);
-        bucket.setExpiration(LocalDateTime.now());
-        when(bucketInstanceRepository.findBucketsExpiringBetween(any(), any(), any()))
-                .thenReturn(new PageImpl<>(List.of(bucket)));
-
         ServiceInstance service = new ServiceInstance();
+        service.setId(201L);
         service.setUsername("user");
-        when(serviceInstanceRepository.findById(anyLong())).thenReturn(Optional.of(service));
+        service.setServiceCycleEndDate(LocalDateTime.now().plusDays(1));
+
+        when(serviceInstanceRepository.findByServiceCycleEndDateBetween(any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(service)));
 
         // Setup UserSessionData with matching superTemplateId
         UserSessionData userSessionData = new UserSessionData();
