@@ -130,6 +130,14 @@ spring:
         # Statistics for monitoring (disable in production if not needed)
         generate_statistics: false  # Disable for better performance
 
+# Idle Session Terminator Configuration
+idle-session:
+  enabled: true                     # Set to false to disable the scheduler entirely
+  timeout-minutes: 60               # Sessions idle longer than this will be terminated
+  scheduler-interval-ms: 300000     # Scheduler fire interval in ms (default: 5 minutes)
+  batch-size: 100                   # Max sessions to process per batch
+  db-write-topic: db-write-events   # Kafka topic for balance persistence events
+
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
 delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM

@@ -14,6 +14,10 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -277,6 +281,55 @@ public class UserCacheService {
      * to ensure cache consistency with the database.
      * Uses Redis SCAN to efficiently iterate through all user keys and delete them.
      */
+
+    /**
+     * Batch-retrieve user data for multiple user IDs in a single MGET round-trip.
+     * Used by {@link IdleSessionTerminatorScheduler} to minimise Redis latency per batch.
+     *
+     * @param userIds list of user IDs to fetch
+     * @return map of userId to UserSessionData (absent entries are omitted)
+     */
+    @Retryable(
+            maxAttempts = 2,
+            backoff = @Backoff(delay = 50, maxDelay = 3000)
+    )
+    public Map<String, UserSessionData> getUserDataBatchAsMap(List<String> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Map.of();
+        }
+
+        log.debug("Batch-fetching user data for {} users via MGET", userIds.size());
+
+        List<String> keys = new ArrayList<>(userIds.size());
+        for (String id : userIds) {
+            keys.add(KEY_PREFIX + id);
+        }
+
+        try {
+            List<String> values = redisTemplateString.opsForValue().multiGet(keys);
+            Map<String, UserSessionData> result = new HashMap<>(userIds.size() * 2);
+
+            if (values != null) {
+                for (int i = 0; i < userIds.size(); i++) {
+                    String value = values.get(i);
+                    if (value != null && !value.isEmpty()) {
+                        try {
+                            UserSessionData userData = objectMapper.readValue(value, UserSessionData.class);
+                            result.put(userIds.get(i), userData);
+                        } catch (Exception e) {
+                            log.error("Failed to deserialize user data for userId: {} - {}",
+                                    userIds.get(i), e.getMessage());
+                        }
+                    }
+                }
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Failed to batch-fetch user data", e);
+            throw new CacheOperationException("Failed to batch-fetch user data", e);
+        }
+    }
 
     /**
      * Cleanup method to shutdown executor service gracefully
