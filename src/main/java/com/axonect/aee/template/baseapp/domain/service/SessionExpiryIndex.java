@@ -31,7 +31,7 @@ import java.util.Set;
 @Slf4j
 public class SessionExpiryIndex {
 
-    private static final String EXPIRY_INDEX_KEY = "session:expiry:index";
+    private static final String EXPIRY_INDEX_KEY = "session:";
     private static final String MEMBER_SEPARATOR = ":";
 
     private final ZSetOperations<String, String> zSetOps;

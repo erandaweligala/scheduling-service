@@ -41,7 +41,7 @@ import java.util.List;
 
 @SpringBootApplication
 @DependsOn({"dteLoggingUtils"})
-@Import({PrometheusScrapeEndpoint.class, CollectorRegistry.class,com.adl.et.telco.dte.prom_spring_metrics_plugin.domain.metrics.autoconfigure.PromMetricsAutoConfiguration.class})
+@Import({PrometheusScrapeEndpoint.class, CollectorRegistry.class})
 @EnableDtePlugins
 @EnableScheduling
 public class BusinessTemplateApplication {

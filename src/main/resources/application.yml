@@ -43,44 +43,31 @@ springdoc:
     path: /v3/api-docs
 
 spring:
-  # High-Performance Redis Configuration with Lettuce (Reactive Client)
   data:
     redis:
       host: localhost
       port: 6379
-      password:  # Set password if Redis requires authentication
-      database: 0  # Redis database index
-      timeout: 10000ms  # Command timeout
-      connect-timeout: 10000ms  # Connection timeout
-      client-type: lettuce  # Use Lettuce instead of Jedis
+      timeout: 3s
+      connect-timeout: 2s
+      client-type: lettuce
+
       lettuce:
+        shutdown-timeout: 100ms
         pool:
-          # Connection pool configuration for high performance
-          max-active: 100     # Maximum active connections in pool (increased for high throughput)
-          max-idle: 50        # Maximum idle connections in pool
-          min-idle: 20        # Minimum idle connections in pool (keep connections ready)
-          max-wait: 5000ms    # Maximum time to wait for connection from pool
-          time-between-eviction-runs: 60000ms  # Eviction thread run interval
-        shutdown-timeout: 100ms  # Graceful shutdown timeout
-        cluster:
-          refresh:
-            period: 60000ms  # Cluster topology refresh period (if using cluster)
-            adaptive: true   # Enable adaptive topology refresh
-  cache:
-    type: redis
-    redis:
-      time-to-live: 3600000  # Default TTL: 1 hour (in milliseconds)
-      cache-null-values: false  # Don't cache null values
-      use-key-prefix: true      # Use cache name as key prefix
-      key-prefix: "scheduling-service:"
+          enabled: true
+          max-active: 150
+          max-idle: 100
+          min-idle: 20
+          max-wait: 1000ms
+          time-between-eviction-runs: 20s
+          min-evictable-idle-time: 240s
   datasource:
     #    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
-    url: jdbc:oracle:thin:@localhost:1522/ORCL
-    username: aaa
+    url: jdbc:oracle:thin:@localhost:1524/ORCL
+    username: aaadr
     password: Aaa!89nky78D
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
-      # OPTIMIZED for 5M service_instance + 10M bucket_instance records
       minimum-idle: 10  # Keep at least 10 connections ready
       maximum-pool-size: 50  # Increased from 20 to handle high volume
       idle-timeout: 300000      # 5 minutes: close idle connections faster
@@ -90,51 +77,44 @@ spring:
       leak-detection-threshold: 60000  # 60 seconds: detect connection leaks
       initialization-fail-timeout: -1 # Allow unlimited time for initial pool setup (handles Oracle connection delays)
       pool-name: OraclePool
-      auto-commit: false  # Explicit transaction control for better performance
-      # Oracle-specific optimizations
+      auto-commit: false
       data-source-properties:
-        oracle.jdbc.implicitStatementCacheSize: 50  # Cache prepared statements
-        oracle.net.CONNECT_TIMEOUT: 20000  # 20 seconds
-        oracle.jdbc.ReadTimeout: 60000  # 60 seconds for large queries
-        v$session.program: scheduling-service  # Set program name for Oracle session tracking
+        oracle.jdbc.implicitStatementCacheSize: 50
+        oracle.net.CONNECT_TIMEOUT: 20000
+        oracle.jdbc.ReadTimeout: 60000
+        v$session.program: scheduling-service
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: false  # Disable SQL logging in production for performance
+    show-sql: false
     properties:
       hibernate:
         format_sql: false
         dialect: org.hibernate.dialect.OracleDialect
-        # CRITICAL: Batch processing settings for massive scale (5M+ records)
         jdbc:
-          batch_size: 100  # Process 100 inserts/updates in a single batch
-          fetch_size: 100  # Fetch 100 rows at a time from result set
-          batch_versioned_data: true  # Enable batch updates for versioned entities
-        order_inserts: true  # Order inserts by entity type for better batching
-        order_updates: true  # Order updates by entity type for better batching
-        # Connection release optimization
+          batch_size: 100
+          fetch_size: 100
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
         connection:
           provider_disables_autocommit: false  # Let Hibernate manage transactions
-        # Query optimization
         query:
           in_clause_parameter_padding: true  # Optimize IN clause queries
           plan_cache_max_size: 2048  # Increase query plan cache
           plan_parameter_metadata_max_size: 256
-        # Statement fetching optimization
-        max_fetch_depth: 3  # Limit depth of outer joins
-        default_batch_fetch_size: 16  # Batch fetch associated entities
-        # Cache settings (minimal for high-volume batch processing)
+        max_fetch_depth: 3
+        default_batch_fetch_size: 16
         cache:
-          use_second_level_cache: false  # Disable L2 cache for batch jobs
-          use_query_cache: false  # Disable query cache for batch jobs
-        # Statistics for monitoring (disable in production if not needed)
-        generate_statistics: false  # Disable for better performance
+          use_second_level_cache: false
+          use_query_cache: false
+        generate_statistics: false
 
 # Idle Session Terminator Configuration
 idle-session:
   enabled: true                     # Set to false to disable the scheduler entirely
-  timeout-minutes: 60               # Sessions idle longer than this will be terminated
-  scheduler-interval-ms: 300000     # Scheduler fire interval in ms (default: 5 minutes)
+  timeout-minutes: 2               # Sessions idle longer than this will be terminated
+  scheduler-interval-ms: 60000     # Scheduler fire interval in ms (default: 5 minutes)
   batch-size: 100                   # Max sessions to process per batch
   db-write-topic: db-write-events   # Kafka topic for balance persistence events
 
