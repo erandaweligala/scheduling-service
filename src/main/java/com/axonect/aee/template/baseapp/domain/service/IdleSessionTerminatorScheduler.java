@@ -84,6 +84,7 @@ public class IdleSessionTerminatorScheduler {
                 LOG_TERMINATE, timeoutMinutes, expiryThresholdMillis);
 
         logIndexStats(expiryThresholdMillis);
+        backfillIndexIfEmpty();
 
         AtomicInteger totalTerminated    = new AtomicInteger(0);
         AtomicInteger totalUsersProcessed = new AtomicInteger(0);
@@ -198,7 +199,7 @@ public class IdleSessionTerminatorScheduler {
             }
 
             try {
-                processUserExpiredSessions(userData, expiredSessions, totalTerminated);
+                processUserExpiredSessions(userId, userData, expiredSessions, totalTerminated);
             } catch (Exception e) {
                 log.error("[{}] Error processing sessions for userId: {}", LOG_PROCESS, userId, e);
             }
@@ -215,9 +216,12 @@ public class IdleSessionTerminatorScheduler {
 
     /**
      * Terminate idle (and absolutely timed-out) sessions for one user,
-     * produce DB write events for balance persistence, and refresh the cache.
+     * produce DB write events for balance persistence, refresh the cache,
+     * and re-register still-active sessions in the expiry index so it stays
+     * populated for future scheduler runs.
      */
-    private void processUserExpiredSessions(UserSessionData userData,
+    private void processUserExpiredSessions(String userId,
+                                            UserSessionData userData,
                                             List<SessionExpiryIndex.SessionExpiryEntry> expiredSessionEntries,
                                             AtomicInteger totalTerminated) {
 
@@ -266,6 +270,17 @@ public class IdleSessionTerminatorScheduler {
             userCacheService.updateUserAndRelatedCaches(userName, userData, userName);
         } catch (Exception e) {
             log.error("[{}] Failed to update cache for user: {}", LOG_PROCESS, userName, e);
+        }
+
+        // Re-register still-active sessions so the index stays populated for future runs.
+        // Uses lastActivityTime when set by the AAA service; falls back to now so the
+        // session is not immediately re-expired in the next scheduler tick.
+        long now = System.currentTimeMillis();
+        for (Session session : activeSessions) {
+            long activityTime = session.getLastActivityTime() > 0
+                    ? session.getLastActivityTime()
+                    : now;
+            sessionExpiryIndex.registerSession(userId, session.getSessionId(), activityTime);
         }
     }
 
@@ -363,6 +378,61 @@ public class IdleSessionTerminatorScheduler {
             log.warn("[{}] Invalid absoluteTimeOut format '{}' for session: {} - {}",
                     LOG_PROCESS, session.getAbsoluteTimeOut(), session.getSessionId(), e.getMessage());
             return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Index backfill
+    // -------------------------------------------------------------------------
+
+    /**
+     * When the session expiry index is empty (e.g. first deployment, Redis flush, or the
+     * AAA service has not yet been updated to call {@code registerSession}), scan all
+     * {@code user:*} keys in Redis and register every active session in the sorted-set index.
+     *
+     * <p>This is a one-time O(N) operation — subsequent runs are skipped once the index
+     * has at least one entry. Sessions discovered here are registered with their
+     * {@link Session#getLastActivityTime()} when available, otherwise with the current
+     * timestamp so they are not immediately expired on the very next scheduler tick.
+     */
+    private void backfillIndexIfEmpty() {
+        try {
+            long total = sessionExpiryIndex.getTotalIndexedSessions();
+            if (total > 0) {
+                return;
+            }
+
+            log.info("[{}] Expiry index is empty — running one-time backfill from Redis user cache", LOG_TERMINATE);
+
+            Map<String, UserSessionData> allUsers = userCacheService.scanAllUserData();
+            if (allUsers.isEmpty()) {
+                log.info("[{}] Backfill: no user sessions found in Redis, nothing to index", LOG_TERMINATE);
+                return;
+            }
+
+            long now = System.currentTimeMillis();
+            int registered = 0;
+
+            for (Map.Entry<String, UserSessionData> entry : allUsers.entrySet()) {
+                String userId = entry.getKey();
+                UserSessionData data = entry.getValue();
+                if (data.getSessions() == null || data.getSessions().isEmpty()) continue;
+
+                for (Session session : data.getSessions()) {
+                    if (session.getSessionId() == null) continue;
+                    long activityTime = session.getLastActivityTime() > 0
+                            ? session.getLastActivityTime()
+                            : now;
+                    sessionExpiryIndex.registerSession(userId, session.getSessionId(), activityTime);
+                    registered++;
+                }
+            }
+
+            log.info("[{}] Backfill complete: registered {} sessions across {} users",
+                    LOG_TERMINATE, registered, allUsers.size());
+
+        } catch (Exception e) {
+            log.error("[{}] Error during expiry index backfill — scheduler will continue without it", LOG_TERMINATE, e);
         }
     }
 
