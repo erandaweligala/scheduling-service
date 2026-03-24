@@ -29,5 +29,11 @@ public class Session {
     private String absoluteTimeOut;
     private String userStatus;
     private long userConcurrency;
+    /**
+     * Epoch milliseconds of the session's last known activity.
+     * Set by the AAA service on each accounting update (Interim-Update / Stop).
+     * When 0 (absent), the expiry index backfill uses the current time as a safe default.
+     */
+    private long lastActivityTime;
 
 }

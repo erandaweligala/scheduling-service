@@ -8,7 +8,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
@@ -329,6 +332,61 @@ public class UserCacheService {
             log.error("Failed to batch-fetch user data", e);
             throw new CacheOperationException("Failed to batch-fetch user data", e);
         }
+    }
+
+    /**
+     * Scan all {@code user:*} keys in Redis and return their deserialized session data.
+     * <p>
+     * This is a one-time O(N) backfill operation used by {@link com.axonect.aee.template.baseapp.domain.service.IdleSessionTerminatorScheduler}
+     * when the session expiry sorted-set index is found empty. It uses Redis SCAN (non-blocking,
+     * cursor-based) rather than KEYS to avoid blocking the Redis server.
+     *
+     * @return map of userId → UserSessionData for every user key currently in Redis
+     */
+    public Map<String, UserSessionData> scanAllUserData() {
+        log.info("Scanning all user:* keys from Redis for expiry index backfill (one-time O(N) operation)");
+
+        List<String> userKeys = new ArrayList<>();
+
+        redisTemplateString.execute((RedisCallback<Object>) connection -> {
+            ScanOptions options = ScanOptions.scanOptions()
+                    .match(KEY_PREFIX + "*")
+                    .count(200)
+                    .build();
+            try (Cursor<byte[]> cursor = connection.scan(options)) {
+                while (cursor.hasNext()) {
+                    userKeys.add(new String(cursor.next()));
+                }
+            } catch (Exception e) {
+                log.error("Error scanning Redis keys for backfill: {}", e.getMessage());
+            }
+            return null;
+        });
+
+        if (userKeys.isEmpty()) {
+            log.info("Backfill scan found no user:* keys in Redis");
+            return Map.of();
+        }
+
+        log.info("Backfill scan found {} user keys; fetching values via MGET", userKeys.size());
+        List<String> values = redisTemplateString.opsForValue().multiGet(userKeys);
+        Map<String, UserSessionData> result = new HashMap<>(userKeys.size() * 2);
+
+        if (values != null) {
+            for (int i = 0; i < userKeys.size(); i++) {
+                String value = values.get(i);
+                if (value == null || value.isEmpty()) continue;
+                String userId = userKeys.get(i).substring(KEY_PREFIX.length());
+                try {
+                    result.put(userId, objectMapper.readValue(value, UserSessionData.class));
+                } catch (Exception e) {
+                    log.error("Failed to deserialize user data for key {}: {}", userKeys.get(i), e.getMessage());
+                }
+            }
+        }
+
+        log.info("Backfill scan complete: {} users with session data", result.size());
+        return result;
     }
 
     /**
