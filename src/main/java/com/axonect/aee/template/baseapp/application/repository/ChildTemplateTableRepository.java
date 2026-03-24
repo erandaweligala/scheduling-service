@@ -27,7 +27,7 @@ public interface ChildTemplateTableRepository extends JpaRepository<ChildTemplat
      *
      * @return list of all EXPIRE templates
      */
-    @Query("SELECT c FROM ChildTemplateTable c WHERE c.messageType = 'EXPIRE' ORDER BY c.daysToExpire")
+    @Query("SELECT c FROM ChildTemplateTable c WHERE c.messageType = 'EXPIRED' ORDER BY c.daysToExpire")
     List<ChildTemplateTable> findAllExpireTemplates();
 
     /**

@@ -183,3 +183,19 @@ cache.api.retry.max-backoff: 10       # Maximum backoff in seconds
 
 # Parallel Processing Configuration
 cache.api.parallel.concurrency: 10    # Number of concurrent API requests
+
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: "*"
+      path-mapping:
+        prometheus: prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true

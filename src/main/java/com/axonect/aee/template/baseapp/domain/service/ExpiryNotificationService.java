@@ -15,6 +15,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -62,13 +63,14 @@ public class ExpiryNotificationService {
      * @return total number of notifications sent
      */
     @Transactional(readOnly = true)
+    @Scheduled(cron = "${expiry-notification.schedule:0 0 9 * * ?}")
     public int processExpiryNotifications() {
         log.info("Starting expiry notification processing...");
 
         int totalNotificationsSent = 0;
 
         try {
-            // Fetch all EXPIRE type templates from database
+            // Fetch all EXPIRED type templates from database
             List<ChildTemplateTable> expireTemplates = childTemplateTableRepository.findAllExpireTemplates();
 
             if (expireTemplates.isEmpty()) {
@@ -220,7 +222,7 @@ public class ExpiryNotificationService {
                 .notificationTime(LocalDateTime.now())
                 .build();
 
-        log.info("message : {}",message);
+        log.info("userName : {} | message : {} | plan : {} | expireDate : {} ",username,message,planName,daysToExpire);
         // Send to Kafka topic
         try {
             kafkaTemplate.send(bucketExpiryTopic, username, notification)
