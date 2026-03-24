@@ -4,6 +4,10 @@ import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.enums.EventType;
 
+import java.time.LocalDateTime;
+import java.util.Map;
+import java.util.UUID;
+
 /**
  * Utility class for mapping domain objects to request payloads.
  */
@@ -26,11 +30,14 @@ public class MappingUtil {
                                                       String sessionId,
                                                       EventType eventType) {
         return DBWriteRequest.builder()
-                .sessionId(sessionId)
-                .bucketId(balance.getBucketId())
-                .bucketUsername(bucketUsername)
-                .quota(balance.getQuota())
+                .eventId(UUID.randomUUID().toString())
                 .eventType(eventType)
+                .timestamp(LocalDateTime.now())
+                .userName(bucketUsername)
+                .sessionId(sessionId)
+                .tableName("BUCKET_INSTANCE")
+                .columnValues(Map.of("currentBalance", balance.getQuota()))
+                .whereConditions(Map.of("bucketId", balance.getBucketId(), "bucketUsername", bucketUsername))
                 .build();
     }
 }
