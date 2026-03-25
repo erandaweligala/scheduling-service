@@ -64,7 +64,7 @@ spring:
   datasource:
     #    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
     url: jdbc:oracle:thin:@localhost:1524/ORCL
-    username: aaadr
+    username: aaa
     password: Aaa!89nky78D
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
@@ -131,7 +131,7 @@ expiry-notification:
 
 service-renewal:
   schedule: "0 30 0 * * ?"
-  db-write-topic: recurrent-service-db-write-events
+  db-write-topic: accounting-db-dc
 
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:

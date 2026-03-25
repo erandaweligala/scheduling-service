@@ -42,6 +42,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -69,7 +70,8 @@ public class RecurrentServiceService {
     private final UserCacheService userCacheService;
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
     private final RecurrentServiceProducer recurrentServiceProducer;
-
+    private static final DateTimeFormatter FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
     @Autowired
     @Lazy
     private RecurrentServiceService self;
@@ -253,7 +255,7 @@ public class RecurrentServiceService {
      * @param bucketMap Map of bucket IDs to bucket entities
      * @param qosProfileMap Map of QoS profile IDs to QoS profiles
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = 3600)
+
     public void processServiceInstanceInTransaction(
             ServiceInstance serviceInstance,
             UserEntity user,
@@ -862,13 +864,13 @@ public class RecurrentServiceService {
     private DBWriteRequest buildServiceInstanceUpdateRequest(ServiceInstance serviceInstance,
                                                               List<DBWriteRequest> relatedWrites) {
         Map<String, Object> columnValues = new HashMap<>();
-        columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate());
-        columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate());
-        columnValues.put("CYCLE_END_DATE", serviceInstance.getServiceCycleEndDate());
-        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate());
+        columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate().format(FORMATTER));
+        columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate().format(FORMATTER));
+        columnValues.put("CYCLE_END_DATE", serviceInstance.getServiceCycleEndDate().format(FORMATTER));
+        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate().format(FORMATTER));
 
         Map<String, Object> whereConditions = new HashMap<>();
-        whereConditions.put("id", serviceInstance.getId());
+        whereConditions.put("ID", serviceInstance.getId());
 
         return DBWriteRequest.builder()
                 .eventType("UPDATE")
@@ -898,7 +900,7 @@ public class RecurrentServiceService {
         columnValues.put("TIME_WINDOW", bucketInstance.getTimeWindow());
         columnValues.put("CONSUMPTION_LIMIT", bucketInstance.getConsumptionLimit());
         columnValues.put("CONSUMPTION_LIMIT_WINDOW", bucketInstance.getConsumptionLimitWindow());
-        columnValues.put("EXPIRATION", bucketInstance.getExpiration());
+        columnValues.put("EXPIRATION", bucketInstance.getExpiration().format(FORMATTER));
         columnValues.put("IS_UNLIMITED", bucketInstance.getIsUnlimited());
 
         return DBWriteRequest.builder()
