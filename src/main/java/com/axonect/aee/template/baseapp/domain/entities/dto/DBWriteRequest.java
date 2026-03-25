@@ -6,18 +6,20 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * Request payload for persisting balance state to the database
- * when a session is terminated by the idle session terminator.
- */
+import java.time.LocalDateTime;
+import java.util.Map;
+
 @Data
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
 public class DBWriteRequest {
-    private String sessionId;
-    private String bucketId;
-    private String bucketUsername;
-    private Long quota;
+    private String eventId;
     private EventType eventType;
+    private LocalDateTime timestamp;
+    private String userName;
+    private String sessionId;
+    private Map<String, Object> columnValues;
+    private Map<String, Object> whereConditions;
+    private String tableName;
 }
