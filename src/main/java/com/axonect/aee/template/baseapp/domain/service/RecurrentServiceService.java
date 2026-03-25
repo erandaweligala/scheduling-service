@@ -52,6 +52,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.stream.Collectors;
 
 @Service
@@ -121,31 +123,53 @@ public class RecurrentServiceService {
         Set<String> planIds = services.stream().map(ServiceInstance::getPlanId).collect(Collectors.toSet());
         Set<Long> serviceIds = services.stream().map(ServiceInstance::getId).collect(Collectors.toSet());
 
-        Map<String, UserEntity> userMap = userRepository.findByUserNameIn(usernames).stream()
-                .collect(Collectors.toMap(UserEntity::getUserName, u -> u));
-        Map<String, Plan> planMap = planRepository.findByPlanIdIn(planIds).stream()
-                .collect(Collectors.toMap(Plan::getPlanId, p -> p));
-        Map<Long, List<BucketInstance>> bucketInstanceMap = bucketInstanceRepository.findByServiceIdIn(serviceIds).stream()
-                .collect(Collectors.groupingBy(BucketInstance::getServiceId));
-        Map<String, List<PlanToBucket>> planToBucketMap = planToBucketRepository.findByPlanIdIn(planIds).stream()
-                .collect(Collectors.groupingBy(PlanToBucket::getPlanId));
+        // Run independent DB calls in parallel
+        CompletableFuture<Map<String, UserEntity>> userMapFuture = CompletableFuture.supplyAsync(() ->
+                userRepository.findByUserNameIn(usernames).stream()
+                        .collect(Collectors.toMap(UserEntity::getUserName, u -> u)));
 
-        Set<String> bucketIds = planToBucketMap.values().stream()
-                .flatMap(Collection::stream)
-                .map(PlanToBucket::getBucketId)
-                .collect(Collectors.toSet());
+        CompletableFuture<Map<String, Plan>> planMapFuture = CompletableFuture.supplyAsync(() ->
+                planRepository.findByPlanIdIn(planIds).stream()
+                        .collect(Collectors.toMap(Plan::getPlanId, p -> p)));
 
-        Map<String, Bucket> bucketMap = bucketRepository.findByBucketIdIn(bucketIds).stream()
-                .collect(Collectors.toMap(Bucket::getBucketId, b -> b));
+        CompletableFuture<Map<Long, List<BucketInstance>>> bucketInstanceMapFuture = CompletableFuture.supplyAsync(() ->
+                bucketInstanceRepository.findByServiceIdIn(serviceIds).stream()
+                        .collect(Collectors.groupingBy(BucketInstance::getServiceId)));
 
-        Set<Long> qosIds = bucketMap.values().stream()
-                .map(Bucket::getQosId)
-                .collect(Collectors.toSet());
+        // planToBucketMap is fetched async; bucketMap and qosProfileMap are chained as they depend on prior results
+        CompletableFuture<Map<String, List<PlanToBucket>>> planToBucketMapFuture = CompletableFuture.supplyAsync(() ->
+                planToBucketRepository.findByPlanIdIn(planIds).stream()
+                        .collect(Collectors.groupingBy(PlanToBucket::getPlanId)));
 
-        Map<Long, QOSProfile> qosProfileMap = qosProfileRepository.findByIdIn(qosIds).stream()
-                .collect(Collectors.toMap(QOSProfile::getId, q -> q));
+        CompletableFuture<Map<String, Bucket>> bucketMapFuture = planToBucketMapFuture.thenApply(planToBucketMap -> {
+            Set<String> bucketIds = planToBucketMap.values().stream()
+                    .flatMap(Collection::stream)
+                    .map(PlanToBucket::getBucketId)
+                    .collect(Collectors.toSet());
+            return bucketRepository.findByBucketIdIn(bucketIds).stream()
+                    .collect(Collectors.toMap(Bucket::getBucketId, b -> b));
+        });
 
-        return new BatchData(userMap, planMap, bucketInstanceMap, planToBucketMap, bucketMap, qosProfileMap);
+        CompletableFuture<Map<Long, QOSProfile>> qosProfileMapFuture = bucketMapFuture.thenApply(bucketMap -> {
+            Set<Long> qosIds = bucketMap.values().stream()
+                    .map(Bucket::getQosId)
+                    .collect(Collectors.toSet());
+            return qosProfileRepository.findByIdIn(qosIds).stream()
+                    .collect(Collectors.toMap(QOSProfile::getId, q -> q));
+        });
+
+        try {
+            return new BatchData(
+                    userMapFuture.join(),
+                    planMapFuture.join(),
+                    bucketInstanceMapFuture.join(),
+                    planToBucketMapFuture.join(),
+                    bucketMapFuture.join(),
+                    qosProfileMapFuture.join()
+            );
+        } catch (CompletionException e) {
+            throw new RuntimeException("Failed to load batch data asynchronously", e.getCause());
+        }
     }
 
     private void processServicesInBatch(List<ServiceInstance> services, BatchData batchData,
