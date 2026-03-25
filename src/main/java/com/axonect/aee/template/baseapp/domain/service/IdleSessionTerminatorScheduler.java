@@ -70,6 +70,9 @@ public class IdleSessionTerminatorScheduler {
         log.info("[{}] Starting optimized idle session termination with timeout: {} minutes, threshold: {}",
                 M_TERMINATE, timeoutMinutes, expiryThresholdMillis);
 
+        // Backfill expiry index from cache on first run or after restart when index is empty
+        backfillIndexIfEmpty(timeoutMinutes);
+
         // First, log index stats for monitoring
         logIndexStats(expiryThresholdMillis);
 
@@ -334,6 +337,51 @@ public class IdleSessionTerminatorScheduler {
         for (Session session : sessionsToTerminate) {
             processSessionForDBWrite(session, balances);
         }
+    }
+
+    /**
+     * Backfill the session expiry index from the user cache when the index is empty.
+     * This handles service restarts and fresh deployments where the Redis sorted-set
+     * has been flushed but user session data still exists in the cache.
+     *
+     * @param timeoutMinutes idle timeout configured for this instance
+     */
+    private void backfillIndexIfEmpty(int timeoutMinutes) {
+        long total = sessionExpiryIndex.getTotalIndexedSessions();
+        if (total > 0) {
+            return;
+        }
+
+        log.info("[{}] Session expiry index is empty – performing one-time backfill from user cache", M_TERMINATE);
+
+        Map<String, UserSessionData> allUserData = userCacheService.scanAllUserData();
+        if (allUserData.isEmpty()) {
+            log.info("[{}] Backfill: no user data found in cache, nothing to register", M_TERMINATE);
+            return;
+        }
+
+        long timeoutMillis = timeoutMinutes * 60_000L;
+        long now = Instant.now().toEpochMilli();
+        int registered = 0;
+
+        for (Map.Entry<String, UserSessionData> entry : allUserData.entrySet()) {
+            String userId = entry.getKey();
+            UserSessionData userData = entry.getValue();
+            if (userData.getSessions() == null) {
+                continue;
+            }
+            for (Session session : userData.getSessions()) {
+                // Use lastActivityTime when available; fall back to now so the session
+                // is treated as freshly active rather than immediately expired.
+                long baseTime = session.getLastActivityTime() > 0 ? session.getLastActivityTime() : now;
+                long expiryTime = baseTime + timeoutMillis;
+                sessionExpiryIndex.registerSession(userId, session.getSessionId(), expiryTime);
+                registered++;
+            }
+        }
+
+        log.info("[{}] Backfill complete: registered {} sessions in expiry index from {} users",
+                M_TERMINATE, registered, allUserData.size());
     }
 
     /**
