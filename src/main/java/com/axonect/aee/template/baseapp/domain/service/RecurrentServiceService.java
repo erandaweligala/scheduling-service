@@ -77,7 +77,7 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-
+   //todo  need to modify this method UpdateServiceInstance and AddNewBucketInstance shoud be initiat one kafka event
     @Scheduled(cron = "${service-renewal.schedule:0 30 0 * * ?}")
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
