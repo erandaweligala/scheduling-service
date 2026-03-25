@@ -62,6 +62,7 @@ public class IdleSessionTerminatorScheduler {
         long startTime = System.currentTimeMillis();
         int timeoutMinutes = config.getTimeoutMinutes();
         int batchSize = config.getBatchSize();
+        long idleTimeoutMillis = (long) timeoutMinutes * 60 * 1000;
 
         // Calculate expiry threshold - the index stores absolute expiry timestamps,
         // so any session whose expiry score is <= now is considered expired
@@ -81,6 +82,13 @@ public class IdleSessionTerminatorScheduler {
             // Process expired sessions in batches using the optimized index
             processExpiredSessionsBatched(expiryThresholdMillis, batchSize,
                     totalSessionsTerminated, totalUsersProcessed, totalBatchesProcessed);
+
+            // Fallback: check sessions that appear "active" in the index but may have stale
+            // scores (e.g. populated by an external service using a different timeout).
+            // This ensures sessions are terminated based on lastActivityTime regardless of
+            // what expiry timestamp was stored in the sorted-set index.
+            checkActiveIndexedSessionsForIdleTimeout(expiryThresholdMillis, batchSize,
+                    idleTimeoutMillis, totalSessionsTerminated, totalUsersProcessed);
 
             int terminatedCount = totalSessionsTerminated.get();
             // Record idle session termination metrics
@@ -273,7 +281,7 @@ public class IdleSessionTerminatorScheduler {
      * @param balance The matching balance
      */
     private void createDBWriteOperationIfNeeded(Session session, Balance balance) {
-        if (balance.getQuota() < session.getAvailableBalance()) {
+        if (balance.getQuota() >= session.getAvailableBalance()) {
             return;
         }
 
@@ -334,6 +342,111 @@ public class IdleSessionTerminatorScheduler {
         for (Session session : sessionsToTerminate) {
             processSessionForDBWrite(session, balances);
         }
+    }
+
+    /**
+     * Fallback pass: fetch sessions whose index score is still in the future but whose
+     * {@code lastActivityTime} shows they have exceeded the configured idle timeout.
+     * This guards against index entries that were written with an incorrect (too-large)
+     * expiry score by an external registrar (e.g. the AAA service using the absolute
+     * session timeout instead of the idle timeout).
+     */
+    private void checkActiveIndexedSessionsForIdleTimeout(long expiryThresholdMillis,
+                                                          int batchSize,
+                                                          long idleTimeoutMillis,
+                                                          AtomicInteger totalSessionsTerminated,
+                                                          AtomicInteger totalUsersProcessed) {
+
+        List<SessionExpiryIndex.SessionExpiryEntry> activeEntries =
+                sessionExpiryIndex.getActiveIndexedSessions(expiryThresholdMillis, batchSize);
+
+        if (activeEntries.isEmpty()) {
+            return;
+        }
+
+        log.debug("[{}] Checking {} active-indexed sessions against lastActivityTime (idle timeout: {} ms)",
+                M_PROCESS, activeEntries.size(), idleTimeoutMillis);
+
+        Map<String, List<SessionExpiryIndex.SessionExpiryEntry>> sessionsByUser = activeEntries.stream()
+                .collect(Collectors.groupingBy(SessionExpiryIndex.SessionExpiryEntry::userId));
+
+        Map<String, UserSessionData> userDataMap =
+                userCacheService.getUserDataBatchAsMap(new ArrayList<>(sessionsByUser.keySet()));
+
+        List<String> membersToRemove = new ArrayList<>();
+
+        for (Map.Entry<String, List<SessionExpiryIndex.SessionExpiryEntry>> entry : sessionsByUser.entrySet()) {
+            String userId = entry.getKey();
+            List<SessionExpiryIndex.SessionExpiryEntry> entriesForUser = entry.getValue();
+            UserSessionData userData = userDataMap.get(userId);
+
+            // Collect index members for cleanup regardless of whether user data is found
+            for (SessionExpiryIndex.SessionExpiryEntry e : entriesForUser) {
+                membersToRemove.add(e.rawMember());
+            }
+
+            if (userData == null || userData.getSessions() == null || userData.getSessions().isEmpty()) {
+                log.debug("[{}] No session data found for userId: {}, cleaning up stale index entries", M_PROCESS, userId);
+                continue;
+            }
+
+            var indexedSessionIds = HashSet.<String>newHashSet(entriesForUser.size() * 2);
+            for (SessionExpiryIndex.SessionExpiryEntry e : entriesForUser) {
+                indexedSessionIds.add(e.sessionId());
+            }
+
+            List<Session> sessionsToTerminate = new ArrayList<>();
+            for (Session session : userData.getSessions()) {
+                if (indexedSessionIds.contains(session.getSessionId())
+                        && isIdleTimeoutExceeded(session, idleTimeoutMillis)) {
+                    sessionsToTerminate.add(session);
+                }
+            }
+
+            if (sessionsToTerminate.isEmpty()) {
+                // Remove stale index members even if nothing is terminated (entries had wrong scores)
+                membersToRemove.addAll(
+                        entriesForUser.stream().map(SessionExpiryIndex.SessionExpiryEntry::rawMember).toList());
+                continue;
+            }
+
+            totalUsersProcessed.incrementAndGet();
+            log.info("[{}] Terminating {} sessions for user {} via lastActivityTime fallback check",
+                    M_PROCESS, sessionsToTerminate.size(), userData.getUserName());
+
+            List<Session> activeSessions = new ArrayList<>(userData.getSessions());
+            activeSessions.removeAll(sessionsToTerminate);
+            userData.setSessions(activeSessions);
+            totalSessionsTerminated.addAndGet(sessionsToTerminate.size());
+
+            triggerDBRequestInitiate(sessionsToTerminate, userData);
+
+            try {
+                userCacheService.updateUserAndRelatedCaches(userData.getUserName(), userData, userData.getUserName());
+            } catch (Exception e) {
+                log.error("[{}] Failed to update cache for user: {}", M_PROCESS, userData.getUserName(), e);
+            }
+        }
+
+        if (!membersToRemove.isEmpty()) {
+            long removed = sessionExpiryIndex.removeSessions(membersToRemove);
+            log.debug("[{}] Removed {} stale active-index entries during fallback check", M_PROCESS, removed);
+        }
+    }
+
+    /**
+     * Returns true when a session's {@code lastActivityTime} is set and the elapsed time
+     * since that activity exceeds the configured idle timeout.
+     *
+     * @param session           the session to evaluate
+     * @param idleTimeoutMillis idle timeout in milliseconds (from config)
+     * @return true if the session is idle beyond the allowed threshold
+     */
+    private boolean isIdleTimeoutExceeded(Session session, long idleTimeoutMillis) {
+        if (session.getLastActivityTime() <= 0) {
+            return false;
+        }
+        return (Instant.now().toEpochMilli() - session.getLastActivityTime()) > idleTimeoutMillis;
     }
 
     /**

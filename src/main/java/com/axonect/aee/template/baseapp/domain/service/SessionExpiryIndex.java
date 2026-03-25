@@ -15,7 +15,7 @@ import java.util.Set;
  *
  * <p>Key structure:
  * <ul>
- *   <li>Sorted Set Key: "session:expiry:index"</li>
+ *   <li>Sorted Set Key: "session:" (see {@link #EXPIRY_INDEX_KEY})</li>
  *   <li>Member: "userId:sessionId"</li>
  *   <li>Score: Unix timestamp of expected expiry time (milliseconds)</li>
  * </ul>
@@ -109,6 +109,40 @@ public class SessionExpiryIndex {
                 EXPIRY_INDEX_KEY,
                 Double.NEGATIVE_INFINITY,
                 expiryThresholdMillis,
+                0,
+                limit
+        );
+
+        List<SessionExpiryEntry> entries = new ArrayList<>();
+        if (members != null) {
+            for (String member : members) {
+                SessionExpiryEntry entry = parseMember(member);
+                if (entry != null) {
+                    entries.add(entry);
+                }
+            }
+        }
+        return entries;
+    }
+
+    /**
+     * Get sessions that appear active by index score (score &gt; threshold) for direct
+     * {@code lastActivityTime} cross-checking by the scheduler.
+     * Used as a fallback when index scores may have been populated with an incorrect timeout
+     * (e.g. absolute session timeout instead of the configured idle timeout), causing truly
+     * idle sessions to remain un-expired in the sorted set.
+     *
+     * @param thresholdMillis sessions with score strictly above this value are returned
+     * @param limit           maximum number of sessions to return
+     * @return sessions whose index score is in the future but may still be idle by lastActivityTime
+     */
+    public List<SessionExpiryEntry> getActiveIndexedSessions(long thresholdMillis, int limit) {
+        log.debug("Querying active indexed sessions above threshold: {}, limit: {}", thresholdMillis, limit);
+
+        Set<String> members = zSetOps.rangeByScore(
+                EXPIRY_INDEX_KEY,
+                (double) thresholdMillis + 1,
+                Double.POSITIVE_INFINITY,
                 0,
                 limit
         );
