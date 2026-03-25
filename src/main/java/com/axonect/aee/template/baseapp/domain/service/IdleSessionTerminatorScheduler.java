@@ -16,32 +16,23 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * Scheduler that terminates idle sessions based on a configurable timeout threshold.
- *
- * <p>Uses a Redis Sorted Set index (via {@link SessionExpiryIndex}) to find expired sessions
- * in O(log N + K) time, then batch-fetches user data with MGET, terminates the sessions,
- * triggers DB write events for balance persistence, and updates the cache.
- *
- * <p>Concurrent execution is skipped with an {@link AtomicBoolean} guard so that a slow run
- * does not overlap with the next scheduled tick.
+ * Optimized scheduler service that terminates idle sessions based on configurable timeout threshold.
  */
 @Component
 @Slf4j
 @RequiredArgsConstructor
 public class IdleSessionTerminatorScheduler {
 
-    private static final String LOG_TERMINATE = "terminateIdleSessions";
-    private static final String LOG_PROCESS   = "processExpiredSessions";
+    private static final String M_TERMINATE = "terminateIdleSessions";
+    private static final String M_PROCESS   = "processExpiredSessions";
 
     private final UserCacheService userCacheService;
     private final SessionExpiryIndex sessionExpiryIndex;
@@ -52,23 +43,19 @@ public class IdleSessionTerminatorScheduler {
     /** Guards against concurrent scheduler executions (equivalent to ConcurrentExecution.SKIP). */
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
-    // -------------------------------------------------------------------------
-    // Scheduled entry point
-    // -------------------------------------------------------------------------
-
     /**
-     * Scheduled task that terminates idle sessions using the optimized index-based lookup.
-     * Interval is controlled by {@code idle-session.scheduler-interval-ms} (default 5 minutes).
+     * Scheduled task to terminate idle sessions using optimized index-based lookup.
+     * Runs at configurable intervals defined by idle-session.scheduler-interval-ms.
      */
     @Scheduled(fixedDelayString = "${idle-session.scheduler-interval-ms:300000}")
     public void terminateIdleSessions() {
         if (!config.isEnabled()) {
-            log.debug("[{}] Idle session terminator is disabled, skipping", LOG_TERMINATE);
+            log.debug("[{}] Idle session terminator is disabled, skipping execution", M_TERMINATE);
             return;
         }
 
         if (!isRunning.compareAndSet(false, true)) {
-            log.debug("[{}] Previous run still in progress, skipping concurrent execution", LOG_TERMINATE);
+            log.debug("[{}] Previous run still in progress, skipping concurrent execution", M_TERMINATE);
             return;
         }
 
@@ -76,83 +63,82 @@ public class IdleSessionTerminatorScheduler {
         int timeoutMinutes = config.getTimeoutMinutes();
         int batchSize = config.getBatchSize();
 
+        // Calculate expiry threshold - sessions created before this time are expired
         long expiryThresholdMillis = Instant.now()
                 .minus(Duration.ofMinutes(timeoutMinutes))
                 .toEpochMilli();
 
-        log.info("[{}] Starting idle session termination - timeout: {} min, threshold: {}",
-                LOG_TERMINATE, timeoutMinutes, expiryThresholdMillis);
+        log.info("[{}] Starting optimized idle session termination with timeout: {} minutes, threshold: {}",
+                M_TERMINATE, timeoutMinutes, expiryThresholdMillis);
 
+        // First, log index stats for monitoring
         logIndexStats(expiryThresholdMillis);
-        backfillIndexIfEmpty();
 
-        AtomicInteger totalTerminated    = new AtomicInteger(0);
-        AtomicInteger totalUsersProcessed = new AtomicInteger(0);
-        AtomicInteger totalBatches       = new AtomicInteger(0);
+        AtomicInteger totalSessionsTerminated = new AtomicInteger(0);
+        AtomicInteger totalUsersProcessed     = new AtomicInteger(0);
+        AtomicInteger totalBatchesProcessed   = new AtomicInteger(0);
 
         try {
+            // Process expired sessions in batches using the optimized index
             processExpiredSessionsBatched(expiryThresholdMillis, batchSize,
-                    totalTerminated, totalUsersProcessed, totalBatches);
+                    totalSessionsTerminated, totalUsersProcessed, totalBatchesProcessed);
 
-            int terminated = totalTerminated.get();
-            monitoringService.recordIdleSessionsTerminated(terminated);
+            int terminatedCount = totalSessionsTerminated.get();
+            // Record idle session termination metrics
+            monitoringService.recordIdleSessionsTerminated(terminatedCount);
 
-            log.info("[{}] Completed - batches: {}, users: {}, sessions terminated: {}, duration: {} ms",
-                    LOG_TERMINATE,
-                    totalBatches.get(),
+            log.info("[{}] Idle session termination completed. Batches: {}, Users: {}, Sessions terminated: {}, Duration: {} ms",
+                    M_TERMINATE,
+                    totalBatchesProcessed.get(),
                     totalUsersProcessed.get(),
-                    terminated,
+                    terminatedCount,
                     System.currentTimeMillis() - startTime);
 
         } catch (Exception e) {
-            log.error("[{}] Error during idle session termination", LOG_TERMINATE, e);
+            log.error("[{}] Error during idle session termination", M_TERMINATE, e);
         } finally {
             isRunning.set(false);
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Batch processing
-    // -------------------------------------------------------------------------
-
     /**
-     * Repeatedly processes batches of expired sessions until no full batch is returned,
-     * which signals there are no more expired sessions.
+     * Process expired sessions in batches until no more expired sessions exist.
+     * Continues processing while a full batch is returned.
      */
     private void processExpiredSessionsBatched(long expiryThresholdMillis, int batchSize,
-                                               AtomicInteger totalTerminated,
+                                               AtomicInteger totalSessionsTerminated,
                                                AtomicInteger totalUsersProcessed,
-                                               AtomicInteger totalBatches) {
+                                               AtomicInteger totalBatchesProcessed) {
         int processedCount;
         do {
             processedCount = processOneBatch(expiryThresholdMillis, batchSize,
-                    totalTerminated, totalUsersProcessed, totalBatches);
+                    totalSessionsTerminated, totalUsersProcessed, totalBatchesProcessed);
             if (processedCount > 0 && processedCount >= batchSize) {
-                log.debug("[{}] Batch complete with {} sessions, checking for more", LOG_PROCESS, processedCount);
+                log.debug("[{}] Batch complete with {} sessions, checking for more", M_PROCESS, processedCount);
             }
         } while (processedCount >= batchSize);
     }
 
     /**
      * Process a single batch of expired sessions.
-     *
-     * @return count of entries processed in this batch (0 means no more work)
+     * Returns the number of sessions processed in this batch.
      */
     private int processOneBatch(long expiryThresholdMillis, int batchSize,
-                                AtomicInteger totalTerminated,
+                                AtomicInteger totalSessionsTerminated,
                                 AtomicInteger totalUsersProcessed,
-                                AtomicInteger totalBatches) {
+                                AtomicInteger totalBatchesProcessed) {
 
+        // Query expired sessions from index - O(log N + K) complexity
         List<SessionExpiryIndex.SessionExpiryEntry> expiredEntries =
                 sessionExpiryIndex.getExpiredSessions(expiryThresholdMillis, batchSize);
 
         if (expiredEntries.isEmpty()) {
-            log.debug("[{}] No expired sessions found in this batch", LOG_PROCESS);
+            log.debug("[{}] No expired sessions found in this batch", M_PROCESS);
             return 0;
         }
 
-        totalBatches.incrementAndGet();
-        log.info("[{}] Processing batch of {} expired sessions", LOG_PROCESS, expiredEntries.size());
+        totalBatchesProcessed.incrementAndGet();
+        log.info("[{}] Processing batch of {} expired sessions", M_PROCESS, expiredEntries.size());
 
         // Group by userId for efficient batch processing
         Map<String, List<SessionExpiryIndex.SessionExpiryEntry>> sessionsByUser = expiredEntries.stream()
@@ -161,70 +147,59 @@ public class IdleSessionTerminatorScheduler {
         List<String> userIds = new ArrayList<>(sessionsByUser.keySet());
         totalUsersProcessed.addAndGet(userIds.size());
 
-        // Single MGET round-trip for all user data
+        // Fetch user data using MGET - single network round trip
         Map<String, UserSessionData> userDataMap = userCacheService.getUserDataBatchAsMap(userIds);
 
-        processUsersAndCleanupIndex(userDataMap, sessionsByUser, totalTerminated);
+        processUsersAndCleanupIndex(userDataMap, sessionsByUser, totalSessionsTerminated);
 
         return expiredEntries.size();
     }
 
-    // -------------------------------------------------------------------------
-    // Per-batch user processing & index cleanup
-    // -------------------------------------------------------------------------
-
     /**
-     * Process expired sessions for each user in the batch, then remove the
-     * consumed entries from the Redis sorted set.
+     * Process users with expired sessions and clean up the index.
      */
     private void processUsersAndCleanupIndex(Map<String, UserSessionData> userDataMap,
                                              Map<String, List<SessionExpiryIndex.SessionExpiryEntry>> sessionsByUser,
-                                             AtomicInteger totalTerminated) {
+                                             AtomicInteger totalSessionsTerminated) {
 
         List<String> membersToRemove = new ArrayList<>();
 
         for (Map.Entry<String, List<SessionExpiryIndex.SessionExpiryEntry>> entry : sessionsByUser.entrySet()) {
             String userId = entry.getKey();
             List<SessionExpiryIndex.SessionExpiryEntry> expiredSessions = entry.getValue();
+            UserSessionData userData = userDataMap.get(userId);
 
-            // Collect raw members for index cleanup regardless of user data availability
+            // Collect members to remove from index
             for (SessionExpiryIndex.SessionExpiryEntry sessionEntry : expiredSessions) {
                 membersToRemove.add(sessionEntry.rawMember());
             }
 
-            UserSessionData userData = userDataMap.get(userId);
             if (userData == null) {
-                log.debug("[{}] User data not found for userId: {}, cleaning up index only", LOG_PROCESS, userId);
+                log.debug("[{}] User data not found for userId: {}, will clean up index entries", M_PROCESS, userId);
                 continue;
             }
 
             try {
-                processUserExpiredSessions(userId, userData, expiredSessions, totalTerminated);
+                processUserExpiredSessions(userData, expiredSessions, totalSessionsTerminated);
             } catch (Exception e) {
-                log.error("[{}] Error processing sessions for userId: {}", LOG_PROCESS, userId, e);
+                log.error("[{}] Error processing sessions for userId: {}", M_PROCESS, userId, e);
             }
         }
 
-        // Remove all processed index entries in a single ZREM call
+        // Remove processed entries from index in batch
         long removed = sessionExpiryIndex.removeSessions(membersToRemove);
-        log.debug("[{}] Removed {} entries from session expiry index", LOG_PROCESS, removed);
+        log.debug("[{}] Removed {} entries from session expiry index", M_PROCESS, removed);
     }
 
-    // -------------------------------------------------------------------------
-    // Per-user session termination
-    // -------------------------------------------------------------------------
-
     /**
-     * Terminate idle (and absolutely timed-out) sessions for one user,
-     * produce DB write events for balance persistence, refresh the cache,
-     * and re-register still-active sessions in the expiry index so it stays
-     * populated for future scheduler runs.
+     * Process expired sessions for a single user.
+     * This method removes expired sessions from cache and triggers DB write operations
+     * to persist balance updates for terminated sessions.
+     * Also checks for absolute session timeout based on sessionInitiatedTime and sessionTimeOut.
      */
-    private void processUserExpiredSessions(String userId,
-                                            UserSessionData userData,
+    private void processUserExpiredSessions(UserSessionData userData,
                                             List<SessionExpiryIndex.SessionExpiryEntry> expiredSessionEntries,
-                                            AtomicInteger totalTerminated) {
-
+                                            AtomicInteger totalSessionsTerminated) {
         if (userData.getSessions() == null || userData.getSessions().isEmpty()) {
             return;
         }
@@ -232,98 +207,73 @@ public class IdleSessionTerminatorScheduler {
         String userName = userData.getUserName();
         List<Session> sessions = userData.getSessions();
 
-        // Build O(1)-lookup set of expired session IDs from the index
-        Set<String> expiredSessionIds = new HashSet<>(expiredSessionEntries.size() * 2);
+        // Build set of expired session IDs for O(1) lookup - using efficient loop instead of stream
+        int expiredCount = expiredSessionEntries.size();
+        var expiredSessionIds = HashSet.newHashSet(expiredCount);
         for (SessionExpiryIndex.SessionExpiryEntry entry : expiredSessionEntries) {
             expiredSessionIds.add(entry.sessionId());
         }
 
-        // Collect sessions that should be terminated (idle timeout OR absolute timeout)
+        // Find sessions to terminate - using efficient loop instead of stream
+        // Check both idle timeout (from index) and absolute timeout (from sessionInitiatedTime)
         List<Session> sessionsToTerminate = new ArrayList<>();
         for (Session session : sessions) {
-            if (expiredSessionIds.contains(session.getSessionId())
-                    || isSessionAbsoluteTimeoutExceeded(session)) {
+            boolean shouldTerminate = expiredSessionIds.contains(session.getSessionId()) ||
+                    isSessionAbsoluteTimeoutExceeded(session);
+            if (shouldTerminate) {
                 sessionsToTerminate.add(session);
             }
         }
 
         if (sessionsToTerminate.isEmpty()) {
-            log.debug("[{}] No matching sessions for user {}, may have been terminated already",
-                    LOG_PROCESS, userName);
+            // Sessions may have been terminated by other means
+            log.debug("[{}] No matching sessions found for user {}, may have been terminated already", M_PROCESS, userName);
             return;
         }
 
-        log.info("[{}] Terminating {} idle session(s) for user: {}",
-                LOG_PROCESS, sessionsToTerminate.size(), userName);
+        log.info("[{}] Terminating {} idle sessions for user: {}", M_PROCESS, sessionsToTerminate.size(), userName);
 
-        // Remove terminated sessions and update user data
+        // Remove terminated sessions
         List<Session> activeSessions = new ArrayList<>(sessions);
         activeSessions.removeAll(sessionsToTerminate);
         userData.setSessions(activeSessions);
-        totalTerminated.addAndGet(sessionsToTerminate.size());
 
-        // Produce DB write events for balance persistence
-        triggerDBWriteEvents(sessionsToTerminate, userData);
+        totalSessionsTerminated.addAndGet(sessionsToTerminate.size());
 
-        // Update Redis cache with the reduced session list
+        // Trigger DB write operations for terminated sessions to persist balance state
+        triggerDBRequestInitiate(sessionsToTerminate, userData);
+
+        // Update cache after DB write is initiated
         try {
             userCacheService.updateUserAndRelatedCaches(userName, userData, userName);
         } catch (Exception e) {
-            log.error("[{}] Failed to update cache for user: {}", LOG_PROCESS, userName, e);
-        }
-
-        // Re-register still-active sessions so the index stays populated for future runs.
-        // Uses lastActivityTime when set by the AAA service; falls back to now so the
-        // session is not immediately re-expired in the next scheduler tick.
-        long now = System.currentTimeMillis();
-        for (Session session : activeSessions) {
-            long activityTime = session.getLastActivityTime() > 0
-                    ? session.getLastActivityTime()
-                    : now;
-            sessionExpiryIndex.registerSession(userId, session.getSessionId(), activityTime);
+            log.error("[{}] Failed to update cache for user: {}", M_PROCESS, userName, e);
         }
     }
-
-    // -------------------------------------------------------------------------
-    // DB write event production
-    // -------------------------------------------------------------------------
 
     /**
-     * For each terminated session, find the matching balance entry and produce a
-     * DB write event so the accounting service can persist the final state.
+     * Find a balance matching the given bucket ID.
+     *
+     * @param balances List of balances to search
+     * @param bucketId The bucket ID to match
+     * @return Matching balance or null if not found
      */
-    private void triggerDBWriteEvents(List<Session> sessionsToTerminate, UserSessionData userData) {
-        List<Balance> balances = userData.getBalance();
-        if (balances == null || balances.isEmpty()) {
-            return;
-        }
-
-        // Build a bucketId → Balance map once for O(1) lookups per session
-        Map<String, Balance> balanceByBucketId = new HashMap<>(balances.size() * 2);
+    private Balance findBalanceByBucketId(List<Balance> balances, String bucketId) {
         for (Balance balance : balances) {
-            if (balance.getBucketId() != null) {
-                balanceByBucketId.put(balance.getBucketId(), balance);
+            if (bucketId.equals(balance.getBucketId())) {
+                return balance;
             }
         }
-
-        for (Session session : sessionsToTerminate) {
-            produceDBWriteIfNeeded(session, balanceByBucketId);
-        }
+        return null;
     }
 
-    private void produceDBWriteIfNeeded(Session session, Map<String, Balance> balanceByBucketId) {
-        String bucketId = session.getPreviousUsageBucketId();
-        if (bucketId == null) {
-            return;
-        }
-
-        Balance balance = balanceByBucketId.get(bucketId);
-        if (balance == null) {
-            return;
-        }
-
-        // Only write when quota is at or below available balance
-        // (indicates the balance was consumed during this session)
+    /**
+     * Create a DB write operation for a session if the balance needs to be persisted.
+     *
+     * @param session The session being terminated
+     * @param balance The matching balance
+     */
+    private void createDBWriteOperationIfNeeded(Session session, Balance balance) {
         if (balance.getQuota() < session.getAvailableBalance()) {
             return;
         }
@@ -335,24 +285,82 @@ public class IdleSessionTerminatorScheduler {
                 EventType.UPDATE_EVENT
         );
 
-        log.debug("[{}] Triggering DB write for terminated session: {}, bucketId: {}",
-                LOG_PROCESS, session.getSessionId(), bucketId);
+        log.debug("[{}] Triggered DB write for terminated session: {}, bucketId: {}",
+                M_PROCESS, session.getSessionId(), balance.getBucketId());
 
         try {
             accountProducer.produceDBWriteEvent(dbWriteRequest);
         } catch (Exception e) {
-            log.error("[{}] Failed to produce DB write event for session: {}",
-                    LOG_PROCESS, session.getSessionId(), e);
+            log.error("[{}] Failed to produce DB write event for session: {}", M_PROCESS, session.getSessionId(), e);
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Absolute timeout check
-    // -------------------------------------------------------------------------
+    /**
+     * Process a single session and create a DB write operation if needed.
+     *
+     * @param session  The session to process
+     * @param balances List of balances to search for matching bucket
+     */
+    private void processSessionForDBWrite(Session session, List<Balance> balances) {
+        String bucketId = session.getPreviousUsageBucketId();
+        if (bucketId == null) {
+            return;
+        }
+
+        Balance matchingBalance = findBalanceByBucketId(balances, bucketId);
+        if (matchingBalance == null) {
+            return;
+        }
+
+        createDBWriteOperationIfNeeded(session, matchingBalance);
+    }
 
     /**
-     * Returns true if the session has exceeded its absolute timeout
-     * ({@code absoluteTimeOut} seconds from {@code sessionStartTime}).
+     * Triggers DB write operations to persist balance state for terminated sessions.
+     * Uses efficient loops to avoid stream overhead and produces events for each session.
+     *
+     * @param sessionsToTerminate list of sessions being terminated
+     * @param userData            user session data containing balance information
+     */
+    private void triggerDBRequestInitiate(List<Session> sessionsToTerminate, UserSessionData userData) {
+        if (sessionsToTerminate == null || sessionsToTerminate.isEmpty()) {
+            return;
+        }
+
+        List<Balance> balances = userData.getBalance();
+        if (balances == null || balances.isEmpty()) {
+            return;
+        }
+
+        for (Session session : sessionsToTerminate) {
+            processSessionForDBWrite(session, balances);
+        }
+    }
+
+    /**
+     * Log index statistics for monitoring.
+     */
+    private void logIndexStats(long expiryThresholdMillis) {
+        try {
+            long total = sessionExpiryIndex.getTotalIndexedSessions();
+            log.info("[{}] Session expiry index stats - Total indexed: {}", M_TERMINATE, total);
+        } catch (Exception e) {
+            log.warn("[{}] Failed to get index stats: {}", M_TERMINATE, e.getMessage());
+        }
+
+        try {
+            long expired = sessionExpiryIndex.getExpiredSessionCount(expiryThresholdMillis);
+            log.info("[{}] Session expiry index stats - Expired sessions: {}", M_TERMINATE, expired);
+        } catch (Exception e) {
+            log.warn("[{}] Failed to get expired count: {}", M_TERMINATE, e.getMessage());
+        }
+    }
+
+    /**
+     * Checks if a session has exceeded its absolute timeout based on sessionInitiatedTime and sessionTimeOut.
+     *
+     * @param session The session to check
+     * @return true if the session has exceeded the absolute timeout, false otherwise
      */
     private boolean isSessionAbsoluteTimeoutExceeded(Session session) {
         if (session == null
@@ -363,96 +371,26 @@ public class IdleSessionTerminatorScheduler {
         }
 
         try {
-            long timeoutSeconds = Long.parseLong(session.getAbsoluteTimeOut().trim());
-            LocalDateTime expiryTime = session.getSessionStartTime().plusSeconds(timeoutSeconds);
-            boolean isExpired = LocalDateTime.now().isAfter(expiryTime);
+            // Parse sessionTimeOut as minutes
+            long timeoutMinutes = Long.parseLong(session.getAbsoluteTimeOut().trim());
+
+            // Calculate when the session should expire (sessionInitiatedTime + timeoutMinutes)
+            LocalDateTime sessionExpiryTime = session.getSessionStartTime().plusSeconds(timeoutMinutes);
+
+            // Check if current time has exceeded the expiry time
+            LocalDateTime currentTime = LocalDateTime.now();
+            boolean isExpired = currentTime.isAfter(sessionExpiryTime);
 
             if (isExpired) {
-                log.info("[{}] Absolute timeout exceeded for session: {}, started: {}, timeout: {}s, expiry: {}",
-                        LOG_PROCESS, session.getSessionId(),
-                        session.getSessionInitiatedTime(), timeoutSeconds, expiryTime);
+                log.info("[{}] Absolute timeout exceeded for session: {}, initiated: {}, timeout: {} minutes, expiry: {}",
+                        M_PROCESS, session.getSessionId(), session.getSessionInitiatedTime(), timeoutMinutes, sessionExpiryTime);
             }
+
             return isExpired;
-
         } catch (NumberFormatException e) {
-            log.warn("[{}] Invalid absoluteTimeOut format '{}' for session: {} - {}",
-                    LOG_PROCESS, session.getAbsoluteTimeOut(), session.getSessionId(), e.getMessage());
+            log.warn("[{}] Invalid sessionTimeOut format: {}. Expected numeric value in minutes. Error: {}",
+                    M_PROCESS, session.getAbsoluteTimeOut().trim(), e.getMessage());
             return false;
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Index backfill
-    // -------------------------------------------------------------------------
-
-    /**
-     * When the session expiry index is empty (e.g. first deployment, Redis flush, or the
-     * AAA service has not yet been updated to call {@code registerSession}), scan all
-     * {@code user:*} keys in Redis and register every active session in the sorted-set index.
-     *
-     * <p>This is a one-time O(N) operation — subsequent runs are skipped once the index
-     * has at least one entry. Sessions discovered here are registered with their
-     * {@link Session#getLastActivityTime()} when available, otherwise with the current
-     * timestamp so they are not immediately expired on the very next scheduler tick.
-     */
-    private void backfillIndexIfEmpty() {
-        try {
-            long total = sessionExpiryIndex.getTotalIndexedSessions();
-            if (total > 0) {
-                return;
-            }
-
-            log.info("[{}] Expiry index is empty — running one-time backfill from Redis user cache", LOG_TERMINATE);
-
-            Map<String, UserSessionData> allUsers = userCacheService.scanAllUserData();
-            if (allUsers.isEmpty()) {
-                log.info("[{}] Backfill: no user sessions found in Redis, nothing to index", LOG_TERMINATE);
-                return;
-            }
-
-            long now = System.currentTimeMillis();
-            int registered = 0;
-
-            for (Map.Entry<String, UserSessionData> entry : allUsers.entrySet()) {
-                String userId = entry.getKey();
-                UserSessionData data = entry.getValue();
-                if (data.getSessions() == null || data.getSessions().isEmpty()) continue;
-
-                for (Session session : data.getSessions()) {
-                    if (session.getSessionId() == null) continue;
-                    long activityTime = session.getLastActivityTime() > 0
-                            ? session.getLastActivityTime()
-                            : now;
-                    sessionExpiryIndex.registerSession(userId, session.getSessionId(), activityTime);
-                    registered++;
-                }
-            }
-
-            log.info("[{}] Backfill complete: registered {} sessions across {} users",
-                    LOG_TERMINATE, registered, allUsers.size());
-
-        } catch (Exception e) {
-            log.error("[{}] Error during expiry index backfill — scheduler will continue without it", LOG_TERMINATE, e);
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Monitoring helpers
-    // -------------------------------------------------------------------------
-
-    private void logIndexStats(long expiryThresholdMillis) {
-        try {
-            long total = sessionExpiryIndex.getTotalIndexedSessions();
-            log.info("[{}] Session expiry index - total indexed: {}", LOG_TERMINATE, total);
-        } catch (Exception e) {
-            log.warn("[{}] Failed to get total index count: {}", LOG_TERMINATE, e.getMessage());
-        }
-
-        try {
-            long expired = sessionExpiryIndex.getExpiredSessionCount(expiryThresholdMillis);
-            log.info("[{}] Session expiry index - expired sessions: {}", LOG_TERMINATE, expired);
-        } catch (Exception e) {
-            log.warn("[{}] Failed to get expired session count: {}", LOG_TERMINATE, e.getMessage());
         }
     }
 }
