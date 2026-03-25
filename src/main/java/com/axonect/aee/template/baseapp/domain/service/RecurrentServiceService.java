@@ -77,7 +77,6 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
-   //todo  need to modify this method UpdateServiceInstance and AddNewBucketInstance shoud be initiat one kafka event
     @Scheduled(cron = "${service-renewal.schedule:0 30 0 * * ?}")
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
@@ -269,14 +268,18 @@ public class RecurrentServiceService {
         // Update cycle management properties
         updateCycleManagementProperties(serviceInstance, plan, user);
 
-        // Publish service instance update event to Kafka
-        recurrentServiceProducer.publishDBWriteEvent(
-                buildServiceInstanceUpdateRequest(serviceInstance),
-                String.valueOf(serviceInstance.getId()));
-        log.debug("Published service instance update event for ID: {}", serviceInstance.getId());
+        // Collect all DB write requests (bucket inserts/updates) to bundle into one Kafka event
+        List<DBWriteRequest> relatedWrites = new ArrayList<>();
 
-        // Provision quotas
-        provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
+        // Provision quotas - bucket write requests are collected into relatedWrites
+        provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap, relatedWrites);
+
+        // Publish ONE combined reactivateExpiredRecurrentServices event: service instance update
+        // as the main event with all bucket instance writes as relatedWrites
+        recurrentServiceProducer.publishDBWriteEvent(
+                buildServiceInstanceUpdateRequest(serviceInstance, relatedWrites),
+                String.valueOf(serviceInstance.getId()));
+        log.debug("Published reactivateExpiredRecurrentServices event for service ID: {}", serviceInstance.getId());
 
         log.debug("Completed processing service instance ID: {} in transaction", serviceInstance.getId());
     }
@@ -364,7 +367,7 @@ public class RecurrentServiceService {
 
     private void provisionQuotaOptimized(ServiceInstance serviceInstance, List<BucketInstance> bucketInstanceList,
                                          List<PlanToBucket> quotaDetails, Map<String, Bucket> bucketMap,
-                                         Map<Long, QOSProfile> qosProfileMap) {
+                                         Map<Long, QOSProfile> qosProfileMap, List<DBWriteRequest> writeRequests) {
         log.debug("Starting optimized quota provisioning for Service Instance ID: {}", serviceInstance.getId());
 
         try {
@@ -383,11 +386,11 @@ public class RecurrentServiceService {
             List<BucketInstance> allNewBuckets = new ArrayList<>();
 
             log.debug("Performing new quota provision for Service Instance ID: {}", serviceInstance.getId());
-            List<BucketInstance> newBuckets = newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            List<BucketInstance> newBuckets = newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap, writeRequests);
             allNewBuckets.addAll(newBuckets);
 
             log.debug("Performing carry forward provision for Service Instance ID: {}", serviceInstance.getId());
-            List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap);
+            List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap, writeRequests);
             allNewBuckets.addAll(carryForwardBuckets);
 
             // Update user cache once with all newly created bucket instances
@@ -405,7 +408,8 @@ public class RecurrentServiceService {
 
 
     private List<BucketInstance> newQuotaProvisionOptimized(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance,
-                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
+                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap,
+                                            List<DBWriteRequest> writeRequests) {
         log.debug("Starting optimized new quota provision for Service Instance ID: {}, Quota count: {}",
                 serviceInstance.getId(), quotaDetails.size());
 
@@ -417,11 +421,10 @@ public class RecurrentServiceService {
                         Boolean.FALSE, null, bucketMap, qosProfileMap);
                 bucketInstanceList.add(bucketInstance);
             }
+            // Collect bucket instance insert requests to be bundled into a single Kafka event
             bucketInstanceList.forEach(bucketInstance ->
-                    recurrentServiceProducer.publishDBWriteEvent(
-                            buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername()),
-                            String.valueOf(serviceInstance.getId())));
-            log.info("Published {} bucket instance insert events for Service Instance ID: {}",
+                    writeRequests.add(buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername())));
+            log.debug("Collected {} bucket instance insert requests for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
 
             return bucketInstanceList;
@@ -653,7 +656,8 @@ public class RecurrentServiceService {
                                                     List<PlanToBucket> quotaDetails,
                                                     ServiceInstance serviceInstance,
                                                     Map<String, Bucket> bucketMap,
-                                                    Map<Long, QOSProfile> qosProfileMap) {
+                                                    Map<Long, QOSProfile> qosProfileMap,
+                                                    List<DBWriteRequest> writeRequests) {
         Long serviceId = serviceInstance.getId();
         log.debug("Starting optimized create carry forward buckets for Service Instance ID: {}, Quota count: {}",
                 serviceId, quotaDetails.size());
@@ -686,16 +690,12 @@ public class RecurrentServiceService {
                 }
             }
 
-            // Publish carry-forward bucket updates and inserts to Kafka
+            // Collect carry-forward bucket updates and inserts to be bundled into a single Kafka event
             updatesToSave.forEach(bucketInstance ->
-                    recurrentServiceProducer.publishDBWriteEvent(
-                            buildBucketInstanceUpdateRequest(bucketInstance, serviceInstance.getUsername()),
-                            String.valueOf(serviceId)));
+                    writeRequests.add(buildBucketInstanceUpdateRequest(bucketInstance, serviceInstance.getUsername())));
             newCarryForwardBucketList.forEach(bucketInstance ->
-                    recurrentServiceProducer.publishDBWriteEvent(
-                            buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername()),
-                            String.valueOf(serviceId)));
-            log.info("Published {} carry-forward bucket instance events for Service Instance ID: {}",
+                    writeRequests.add(buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername())));
+            log.debug("Collected {} carry-forward bucket instance requests for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
             return newCarryForwardBucketList;
@@ -859,7 +859,8 @@ public class RecurrentServiceService {
         }
     }
 
-    private DBWriteRequest buildServiceInstanceUpdateRequest(ServiceInstance serviceInstance) {
+    private DBWriteRequest buildServiceInstanceUpdateRequest(ServiceInstance serviceInstance,
+                                                              List<DBWriteRequest> relatedWrites) {
         Map<String, Object> columnValues = new HashMap<>();
         columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate());
         columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate());
@@ -876,6 +877,7 @@ public class RecurrentServiceService {
                 .tableName("SERVICE_INSTANCE")
                 .columnValues(columnValues)
                 .whereConditions(whereConditions)
+                .relatedWrites(relatedWrites.isEmpty() ? null : relatedWrites)
                 .build();
     }
 
