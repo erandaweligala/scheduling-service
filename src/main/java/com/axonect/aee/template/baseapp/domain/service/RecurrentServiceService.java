@@ -8,6 +8,7 @@ import com.axonect.aee.template.baseapp.application.repository.QOSProfileReposit
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceProcessingFailureRepository;
 import com.axonect.aee.template.baseapp.application.repository.UserRepository;
+import com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Bucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Plan;
@@ -37,6 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -66,6 +68,7 @@ public class RecurrentServiceService {
     private final BucketInstanceRepository bucketInstanceRepository;
     private final UserCacheService userCacheService;
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
+    private final RecurrentServiceProducer recurrentServiceProducer;
 
     @Autowired
     @Lazy
@@ -75,7 +78,6 @@ public class RecurrentServiceService {
     private int chunkSize;
 
 
-    //todo need implement this mothod modify all db insert and update part move to kafka publish (com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest)
     @Scheduled(cron = "${service-renewal.schedule:0 30 0 * * ?}")
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
@@ -267,9 +269,11 @@ public class RecurrentServiceService {
         // Update cycle management properties
         updateCycleManagementProperties(serviceInstance, plan, user);
 
-        // Save the updated service instance
-        serviceInstanceRepository.save(serviceInstance);
-        log.debug("Saved service instance ID: {}", serviceInstance.getId());
+        // Publish service instance update event to Kafka
+        recurrentServiceProducer.publishDBWriteEvent(
+                buildServiceInstanceUpdateRequest(serviceInstance),
+                String.valueOf(serviceInstance.getId()));
+        log.debug("Published service instance update event for ID: {}", serviceInstance.getId());
 
         // Provision quotas
         provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap);
@@ -413,8 +417,11 @@ public class RecurrentServiceService {
                         Boolean.FALSE, null, bucketMap, qosProfileMap);
                 bucketInstanceList.add(bucketInstance);
             }
-            bucketInstanceRepository.saveAll(bucketInstanceList);
-            log.info("Saved {} bucket instances for Service Instance ID: {}",
+            bucketInstanceList.forEach(bucketInstance ->
+                    recurrentServiceProducer.publishDBWriteEvent(
+                            buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername()),
+                            String.valueOf(serviceInstance.getId())));
+            log.info("Published {} bucket instance insert events for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
 
             return bucketInstanceList;
@@ -679,10 +686,16 @@ public class RecurrentServiceService {
                 }
             }
 
-            // BATCH SAVE: Save all updates and new buckets together
-            bucketInstanceRepository.saveAll(updatesToSave);
-            bucketInstanceRepository.saveAll(newCarryForwardBucketList);
-            log.info("Saved {} carryforward bucket instances for Service Instance ID: {}",
+            // Publish carry-forward bucket updates and inserts to Kafka
+            updatesToSave.forEach(bucketInstance ->
+                    recurrentServiceProducer.publishDBWriteEvent(
+                            buildBucketInstanceUpdateRequest(bucketInstance, serviceInstance.getUsername()),
+                            String.valueOf(serviceId)));
+            newCarryForwardBucketList.forEach(bucketInstance ->
+                    recurrentServiceProducer.publishDBWriteEvent(
+                            buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername()),
+                            String.valueOf(serviceId)));
+            log.info("Published {} carry-forward bucket instance events for Service Instance ID: {}",
                     newCarryForwardBucketList.size(), serviceId);
 
             return newCarryForwardBucketList;
@@ -834,14 +847,106 @@ public class RecurrentServiceService {
                     .additionalInfo(truncateString(additionalInfo, 1000))
                     .build();
 
-            serviceProcessingFailureRepository.save(failure);
-            log.debug("Saved failure record for service ID: {}, username: {}", serviceInstance.getId(), username);
+            recurrentServiceProducer.publishDBWriteEvent(
+                    buildServiceProcessingFailureInsertRequest(failure),
+                    String.valueOf(serviceInstance.getId()));
+            log.debug("Published failure record event for service ID: {}, username: {}", serviceInstance.getId(), username);
 
         } catch (Exception ex) {
             // Log but don't throw - we don't want failure tracking to break the main processing
             log.error("Failed to save processing failure record for service ID: {}. Error: {}",
                     serviceInstance.getId(), ex.getMessage(), ex);
         }
+    }
+
+    private DBWriteRequest buildServiceInstanceUpdateRequest(ServiceInstance serviceInstance) {
+        Map<String, Object> columnValues = new HashMap<>();
+        columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate());
+        columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate());
+        columnValues.put("CYCLE_END_DATE", serviceInstance.getServiceCycleEndDate());
+        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate());
+
+        Map<String, Object> whereConditions = new HashMap<>();
+        whereConditions.put("id", serviceInstance.getId());
+
+        return DBWriteRequest.builder()
+                .eventType("UPDATE")
+                .timestamp(Instant.now().toString())
+                .userName(serviceInstance.getUsername())
+                .tableName("SERVICE_INSTANCE")
+                .columnValues(columnValues)
+                .whereConditions(whereConditions)
+                .build();
+    }
+
+    private DBWriteRequest buildBucketInstanceInsertRequest(BucketInstance bucketInstance, String username) {
+        Map<String, Object> columnValues = new HashMap<>();
+        columnValues.put("BUCKET_ID", bucketInstance.getBucketId());
+        columnValues.put("SERVICE_ID", bucketInstance.getServiceId());
+        columnValues.put("BUCKET_TYPE", bucketInstance.getBucketType());
+        columnValues.put("RULE", bucketInstance.getRule());
+        columnValues.put("PRIORITY", bucketInstance.getPriority());
+        columnValues.put("INITIAL_BALANCE", bucketInstance.getInitialBalance());
+        columnValues.put("CURRENT_BALANCE", bucketInstance.getCurrentBalance());
+        columnValues.put("USAGE", bucketInstance.getUsage());
+        columnValues.put("CARRY_FORWARD", bucketInstance.getCarryForward());
+        columnValues.put("MAX_CARRY_FORWARD", bucketInstance.getMaxCarryForward());
+        columnValues.put("TOTAL_CARRY_FORWARD", bucketInstance.getTotalCarryForward());
+        columnValues.put("CARRY_FORWARD_VALIDITY", bucketInstance.getCarryForwardValidity());
+        columnValues.put("TIME_WINDOW", bucketInstance.getTimeWindow());
+        columnValues.put("CONSUMPTION_LIMIT", bucketInstance.getConsumptionLimit());
+        columnValues.put("CONSUMPTION_LIMIT_WINDOW", bucketInstance.getConsumptionLimitWindow());
+        columnValues.put("EXPIRATION", bucketInstance.getExpiration());
+        columnValues.put("IS_UNLIMITED", bucketInstance.getIsUnlimited());
+
+        return DBWriteRequest.builder()
+                .eventType("INSERT")
+                .timestamp(Instant.now().toString())
+                .userName(username)
+                .tableName("BUCKET_INSTANCE")
+                .columnValues(columnValues)
+                .build();
+    }
+
+    private DBWriteRequest buildBucketInstanceUpdateRequest(BucketInstance bucketInstance, String username) {
+        Map<String, Object> columnValues = new HashMap<>();
+        columnValues.put("CURRENT_BALANCE", bucketInstance.getCurrentBalance());
+
+        Map<String, Object> whereConditions = new HashMap<>();
+        whereConditions.put("id", bucketInstance.getId());
+
+        return DBWriteRequest.builder()
+                .eventType("UPDATE")
+                .timestamp(Instant.now().toString())
+                .userName(username)
+                .tableName("BUCKET_INSTANCE")
+                .columnValues(columnValues)
+                .whereConditions(whereConditions)
+                .build();
+    }
+
+    private DBWriteRequest buildServiceProcessingFailureInsertRequest(ServiceProcessingFailure failure) {
+        Map<String, Object> columnValues = new HashMap<>();
+        columnValues.put("SERVICE_INSTANCE_ID", failure.getServiceInstanceId());
+        columnValues.put("USERNAME", failure.getUsername());
+        columnValues.put("PLAN_ID", failure.getPlanId());
+        columnValues.put("PLAN_NAME", failure.getPlanName());
+        columnValues.put("ERROR_TYPE", failure.getErrorType());
+        columnValues.put("ERROR_MESSAGE", failure.getErrorMessage());
+        columnValues.put("STACK_TRACE", failure.getStackTrace());
+        columnValues.put("RETRY_COUNT", failure.getRetryCount());
+        columnValues.put("PROCESSING_STATUS", failure.getProcessingStatus());
+        columnValues.put("FAILURE_DATE", LocalDateTime.now());
+        columnValues.put("BATCH_ID", failure.getBatchId());
+        columnValues.put("ADDITIONAL_INFO", failure.getAdditionalInfo());
+
+        return DBWriteRequest.builder()
+                .eventType("INSERT")
+                .timestamp(Instant.now().toString())
+                .userName(failure.getUsername())
+                .tableName("SERVICE_PROCESSING_FAILURE")
+                .columnValues(columnValues)
+                .build();
     }
 
     /**
