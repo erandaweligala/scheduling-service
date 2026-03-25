@@ -74,6 +74,8 @@ public class RecurrentServiceService {
     @Value("${recurrent-service.chunk-size}")
     private int chunkSize;
 
+
+    //todo need implement this mothod modify all db insert and update part move to kafka publish (com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest)
     @Scheduled(cron = "${service-renewal.schedule:0 30 0 * * ?}")
     public void reactivateExpiredRecurrentServices() {
         // Generate unique batch ID for this processing run
