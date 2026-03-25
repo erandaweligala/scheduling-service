@@ -1,6 +1,7 @@
 package com.axonect.aee.template.baseapp.domain.service;
 
 import com.axonect.aee.template.baseapp.application.repository.*;
+import com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.repo.*;
 import com.axonect.aee.template.baseapp.domain.exception.AAAException;
@@ -34,6 +35,7 @@ class RecurrentServiceServiceTest {
     @Mock private BucketInstanceRepository bucketInstanceRepository;
     @Mock private UserCacheService userCacheService;
     @Mock private ServiceProcessingFailureRepository serviceProcessingFailureRepository;
+    @Mock private RecurrentServiceProducer recurrentServiceProducer;
 
     @InjectMocks
     @Spy
@@ -117,7 +119,7 @@ class RecurrentServiceServiceTest {
         // Run service
         recurrentServiceService.reactivateExpiredRecurrentServices();
 
-        verify(serviceInstanceRepository, atLeastOnce()).save(any());
+        verify(recurrentServiceProducer, atLeastOnce()).publishDBWriteEvent(any(DBWriteRequest.class), anyString());
     }
 
     @Test
@@ -188,8 +190,7 @@ class RecurrentServiceServiceTest {
         });
 
         // 4. Verifications
-        verify(serviceInstanceRepository, times(1)).save(any(ServiceInstance.class));
-        verify(bucketInstanceRepository, atLeastOnce()).saveAll(any());
+        verify(recurrentServiceProducer, times(1)).publishDBWriteEvent(any(DBWriteRequest.class), eq(String.valueOf(serviceId)));
         verify(userCacheService, times(1)).updateUserAndRelatedCaches(eq(username), any(), eq(username));
     }
     @Test
