@@ -50,24 +50,23 @@ spring:
         master: mymaster  # Sentinel master name
         nodes:
           - redis-cluster-headless.csg-aaa-query-cache.svc.cluster.local:26379 # Sentinel node(s)
-      password: S3cure_Redis_Pass_w0rd!  # Redis authentication password
-      database: 0  # Redis database index
-      timeout: 120000ms  # Command timeout (120 seconds)
-      connect-timeout: 10000ms  # Connection timeout
-      client-type: lettuce  # Use Lettuce instead of Jedis
+      password: S3cure_Redis_Pass_w0rd!
+      database: 0
+      timeout: 120000ms
+      connect-timeout: 10000ms
+      client-type: lettuce
       lettuce:
         pool:
-          # Connection pool configuration for high performance with Sentinel
-          max-active: 150     # Maximum active connections in pool (max-pool-size)
-          max-idle: 300       # Maximum idle connections in pool
-          min-idle: 50        # Minimum idle connections in pool (keep connections ready)
-          max-wait: 3000ms    # Maximum time to wait for connection from pool (max-pool-waiting)
-          time-between-eviction-runs: 20000ms  # Pool cleaner interval (pool-cleaner-interval)
-        shutdown-timeout: 100ms  # Graceful shutdown timeout
+          max-active: 150
+          max-idle: 300
+          min-idle: 50
+          max-wait: 3000ms
+          time-between-eviction-runs: 20000ms
+        shutdown-timeout: 100ms
         cluster:
           refresh:
-            period: 60000ms  # Cluster topology refresh period
-            adaptive: true   # Enable adaptive topology refresh
+            period: 60000ms
+            adaptive: true
   cache:
     type: redis
     redis:
@@ -126,6 +125,14 @@ spring:
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
 delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
+
+# Idle Session Terminator Configuration
+idle-session:
+  enabled: true                     # Set to false to disable the scheduler entirely
+  timeout-minutes: 2               # Sessions idle longer than this will be terminated
+  scheduler-interval-ms: 60000     # Scheduler fire interval in ms (default: 5 minutes)
+  batch-size: 100                   # Max sessions to process per batch
+  db-write-topic: db-write-events   # Kafka topic for balance persistence events
 
 # Expiry Notification Configuration
 expiry-notification:

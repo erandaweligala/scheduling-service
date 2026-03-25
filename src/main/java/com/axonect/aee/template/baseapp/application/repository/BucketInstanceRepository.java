@@ -4,6 +4,7 @@ import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
@@ -63,4 +64,9 @@ public interface BucketInstanceRepository extends JpaRepository<BucketInstance,L
             @Param("startDate") LocalDateTime startDate,
             @Param("endDate") LocalDateTime endDate,
             Pageable pageable);
+
+    boolean existsByServiceId(Long serviceId);
+    @Modifying
+    @Query("DELETE FROM BucketInstance b WHERE b.serviceId = :serviceId")
+    int deleteAllByServiceId(@Param("serviceId") Long serviceId);
 }

@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -69,6 +70,12 @@ public class IdleSessionTerminatorScheduler {
 
         log.info("[{}] Starting optimized idle session termination with timeout: {} minutes, threshold: {}",
                 M_TERMINATE, timeoutMinutes, expiryThresholdMillis);
+
+
+        LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(expiryThresholdMillis), ZoneId.systemDefault());
+
+        log.info("[{}] Starting optimized idle session termination with timeout: {} minutes, threshold: {}",
+                M_TERMINATE, timeoutMinutes, dateTime);
 
         // First, log index stats for monitoring
         logIndexStats(expiryThresholdMillis);

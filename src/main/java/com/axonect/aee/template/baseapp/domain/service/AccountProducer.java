@@ -60,7 +60,7 @@ public class AccountProducer {
      */
     @Recover
     public void fallbackProduceDBWriteEvent(Exception e, DBWriteRequest request) {
-        log.error("All retry attempts exhausted for DB write event. Session: {}, bucketId: {}",
-                request.getSessionId(), request.getBucketId(), e);
+        log.error("All retry attempts exhausted for DB write event. Session: {}",
+                request.getSessionId(), e);
     }
 }
