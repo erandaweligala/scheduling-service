@@ -63,10 +63,9 @@ public class IdleSessionTerminatorScheduler {
         int timeoutMinutes = config.getTimeoutMinutes();
         int batchSize = config.getBatchSize();
 
-        // Calculate expiry threshold - sessions created before this time are expired
-        long expiryThresholdMillis = Instant.now()
-                .minus(Duration.ofMinutes(timeoutMinutes))
-                .toEpochMilli();
+        // Calculate expiry threshold - the index stores absolute expiry timestamps,
+        // so any session whose expiry score is <= now is considered expired
+        long expiryThresholdMillis = Instant.now().toEpochMilli();
 
         log.info("[{}] Starting optimized idle session termination with timeout: {} minutes, threshold: {}",
                 M_TERMINATE, timeoutMinutes, expiryThresholdMillis);
@@ -374,8 +373,8 @@ public class IdleSessionTerminatorScheduler {
             // Parse sessionTimeOut as minutes
             long timeoutMinutes = Long.parseLong(session.getAbsoluteTimeOut().trim());
 
-            // Calculate when the session should expire (sessionInitiatedTime + timeoutMinutes)
-            LocalDateTime sessionExpiryTime = session.getSessionStartTime().plusSeconds(timeoutMinutes);
+            // Calculate when the session should expire (sessionStartTime + timeoutMinutes)
+            LocalDateTime sessionExpiryTime = session.getSessionStartTime().plusMinutes(timeoutMinutes);
 
             // Check if current time has exceeded the expiry time
             LocalDateTime currentTime = LocalDateTime.now();
