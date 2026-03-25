@@ -129,6 +129,7 @@ expiry-notification:
 
 service-renewal:
   schedule: "0 30 0 * * ?"
+  db-write-topic: recurrent-service-db-write-events
 
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:
