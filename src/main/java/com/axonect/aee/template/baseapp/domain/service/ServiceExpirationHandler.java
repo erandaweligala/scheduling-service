@@ -41,6 +41,34 @@ public class ServiceExpirationHandler {
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     /**
+     * Triggered when a Redis TTL key of the form  service::{serviceId}:{bucketInstanceId}  expires.
+     *
+     * <p>Publishes a DELETE event for the single expired BucketInstance only.
+     *
+     * @param serviceId        the PK of the owning ServiceInstance (used for logging/routing)
+     * @param bucketInstanceId the PK of the expired BucketInstance
+     */
+    public void handleBucketExpiration(Long serviceId, Long bucketInstanceId) {
+        log.info("TTL expired — publishing BucketInstance DELETE event for serviceId: {}, bucketInstanceId: {}",
+                serviceId, bucketInstanceId);
+
+        publishDeleteEvent(bucketInstanceTable, "ID", bucketInstanceId, "BucketInstance")
+                .whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        log.error("Failed to publish BUCKET_INSTANCE DELETE for bucketInstanceId: {} (serviceId: {}) — " +
+                                "manual cleanup may be required", bucketInstanceId, serviceId, ex);
+                    } else {
+                        log.info("BUCKET_INSTANCE DELETE published for bucketInstanceId: {} (serviceId: {}) → " +
+                                        "topic={}, partition={}, offset={}",
+                                bucketInstanceId, serviceId,
+                                result.getRecordMetadata().topic(),
+                                result.getRecordMetadata().partition(),
+                                result.getRecordMetadata().offset());
+                    }
+                });
+    }
+
+    /**
      * Triggered when a Redis TTL key of the form  service::{serviceId}  expires.
      *
      * @param serviceId the PK of the expired ServiceInstance

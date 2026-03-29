@@ -10,12 +10,14 @@ import org.springframework.stereotype.Component;
 /**
  * Listens to Redis key expiration events.
  *
- * When a key of the form  service::{serviceId}  expires, this listener:
- *   1. Extracts the serviceId from the key name
- *   2. Triggers removal of all BucketInstance records for that serviceId
+ * Handles two key formats:
+ * <ul>
+ *   <li>{@code service::{serviceId}} — triggers full service + bucket cleanup</li>
+ *   <li>{@code service::{serviceId}:{bucketInstanceId}} — triggers single-bucket cleanup</li>
+ * </ul>
  *
  * Redis only delivers the KEY name on expiry — the value is already gone.
- * That is why the serviceId is encoded in the key, not the value.
+ * That is why the serviceId (and bucketInstanceId) are encoded in the key, not the value.
  */
 @Slf4j
 @Component
@@ -36,14 +38,25 @@ public class KeyExpirationListener implements MessageListener {
             return;
         }
 
-        String serviceIdStr = expiredKey.substring(SERVICE_KEY_PREFIX.length());
+        String remaining = expiredKey.substring(SERVICE_KEY_PREFIX.length());
+        int colonIndex = remaining.indexOf(':');
 
         try {
-            Long serviceId = Long.parseLong(serviceIdStr);
-            log.info("Service TTL expired for serviceId: {}. Triggering BucketInstance cleanup.", serviceId);
-            serviceExpirationHandler.handleServiceExpiration(serviceId);
+            if (colonIndex == -1) {
+                // Format: service::{serviceId}
+                Long serviceId = Long.parseLong(remaining);
+                log.info("Service TTL expired for serviceId: {}. Triggering full service cleanup.", serviceId);
+                serviceExpirationHandler.handleServiceExpiration(serviceId);
+            } else {
+                // Format: service::{serviceId}:{bucketInstanceId}
+                Long serviceId        = Long.parseLong(remaining.substring(0, colonIndex));
+                Long bucketInstanceId = Long.parseLong(remaining.substring(colonIndex + 1));
+                log.info("Bucket TTL expired for serviceId: {}, bucketInstanceId: {}. Triggering bucket cleanup.",
+                        serviceId, bucketInstanceId);
+                serviceExpirationHandler.handleBucketExpiration(serviceId, bucketInstanceId);
+            }
         } catch (NumberFormatException e) {
-            log.error("Could not parse serviceId from expired key '{}': {}", expiredKey, e.getMessage());
+            log.error("Could not parse IDs from expired key '{}': {}", expiredKey, e.getMessage());
         }
     }
 }

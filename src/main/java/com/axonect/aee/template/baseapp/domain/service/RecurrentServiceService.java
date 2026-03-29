@@ -74,6 +74,7 @@ public class RecurrentServiceService {
     private final RecurrentServiceProducer recurrentServiceProducer;
     private static final DateTimeFormatter FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
+    private final ServiceCacheTTLService serviceCacheTTLService;
     @Autowired
     @Lazy
     private RecurrentServiceService self;
@@ -419,6 +420,13 @@ public class RecurrentServiceService {
             List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap, writeRequests);
             allNewBuckets.addAll(carryForwardBuckets);
 
+            // Set a Redis TTL key for each newly provisioned bucket instance
+            for (BucketInstance bucket : allNewBuckets) {
+                serviceCacheTTLService.setServiceBucketCacheTTL(serviceInstance, bucket);
+            }
+            log.debug("Set Redis TTL keys for {} bucket instances of Service Instance ID: {}",
+                    allNewBuckets.size(), serviceInstance.getId());
+
             // Update user cache once with all newly created bucket instances
             if (!allNewBuckets.isEmpty()) {
                 updateUserCacheWithBuckets(serviceInstance.getUsername(), allNewBuckets, serviceInstance);
@@ -447,6 +455,9 @@ public class RecurrentServiceService {
                         Boolean.FALSE, null, bucketMap, qosProfileMap);
                 bucketInstanceList.add(bucketInstance);
             }
+            // Persist to DB so each BucketInstance gets its generated ID before TTL keys are set
+            bucketInstanceRepository.saveAll(bucketInstanceList);
+
             // Collect bucket instance insert requests to be bundled into a single Kafka event
             bucketInstanceList.forEach(bucketInstance ->
                     writeRequests.add(buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername())));
@@ -714,6 +725,11 @@ public class RecurrentServiceService {
                                 planToBucket.getBucketId(), serviceId);
                     }
                 }
+            }
+
+            // Persist new carry-forward buckets to DB so they get generated IDs before TTL keys are set
+            if (!newCarryForwardBucketList.isEmpty()) {
+                bucketInstanceRepository.saveAll(newCarryForwardBucketList);
             }
 
             // Collect carry-forward bucket updates and inserts to be bundled into a single Kafka event
