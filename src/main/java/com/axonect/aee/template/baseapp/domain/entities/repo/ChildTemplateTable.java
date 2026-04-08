@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  * Stores template configurations for different message types (EXPIRE, QUOTA, etc.)
  */
 @Entity
-@Table(name = "CHILD_TEMPLATE_TABLE", schema = "AAA")
+@Table(name = "CHILD_TEMPLATE_TABLE")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

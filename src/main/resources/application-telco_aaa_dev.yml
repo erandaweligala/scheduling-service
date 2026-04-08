@@ -45,39 +45,27 @@ springdoc:
 spring:
   data:
     redis:
-      # Redis Sentinel Configuration
-      sentinel:
-        master: mymaster  # Sentinel master name
-        nodes:
-          - redis-cluster-headless.csg-aaa-query-cache.svc.cluster.local:26379 # Sentinel node(s)
-      password: S3cure_Redis_Pass_w0rd!
-      database: 0
-      timeout: 120000ms
-      connect-timeout: 10000ms
       client-type: lettuce
+      password: "${REDIS_PASSWORD}"
+      timeout: 120000ms
+      sentinel:
+        master: "${REDIS_MASTER_NAME}"
+        nodes:
+          - redis-cluster-headless.cluster-redis.svc.cluster.local:26379
+        password: "${REDIS_NODE_PASSWORD}"
       lettuce:
         pool:
-          max-active: 150
-          max-idle: 300
-          min-idle: 50
+          max-active: 600
           max-wait: 3000ms
-          time-between-eviction-runs: 20000ms
-        shutdown-timeout: 100ms
-        cluster:
-          refresh:
-            period: 60000ms
-            adaptive: true
-  cache:
-    type: redis
-    redis:
-      time-to-live: 3600000  # Default TTL: 1 hour (in milliseconds)
-      cache-null-values: false  # Don't cache null values
-      use-key-prefix: true      # Use cache name as key prefix
-      key-prefix: "scheduling-service:"
+          max-idle: 200
+          min-idle: 10
+        shutdown-timeout: 240000ms
+
+
   datasource:
     url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
-    username: aaa
-    password: Aaa!89nky78D
+    username: "${DB_USER}"
+    password: "${DB_PASSWORD}"
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
       minimum-idle: 10  # Keep at least 10 connections ready
@@ -129,10 +117,10 @@ delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 # Idle Session Terminator Configuration
 idle-session:
   enabled: true                     # Set to false to disable the scheduler entirely
-  timeout-minutes: 2               # Sessions idle longer than this will be terminated
-  scheduler-interval-ms: 60000     # Scheduler fire interval in ms (default: 5 minutes)
+  timeout-minutes: 20               # Sessions idle longer than this will be terminated
+  scheduler-interval-ms: 900000     # Scheduler fire interval in ms (default: 5 minutes)
   batch-size: 100                   # Max sessions to process per batch
-  db-write-topic: db-write-events   # Kafka topic for balance persistence events
+  db-write-topic: accounting-db-dc   # Kafka topic for balance persistence events
 
 # Expiry Notification Configuration
 expiry-notification:
@@ -142,10 +130,12 @@ expiry-notification:
 #Service Renewal Configuration
 service-renewal:
   schedule: "0 30 0 * * ?"
+  db-write-topic: accounting-db-dc
+
   
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:
-  bootstrap-servers: kafka-headless.cluster-one.svc.cluster.local:9092            # Kafka broker addresses (comma-separated for cluster)
+  bootstrap-servers: kafka-headless.cluster-dc.svc.cluster.local:9092            # Kafka broker addresses (comma-separated for cluster)
   producer:
     retries: 3
     acks: all

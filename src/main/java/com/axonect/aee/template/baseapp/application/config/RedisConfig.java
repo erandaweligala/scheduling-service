@@ -59,8 +59,8 @@ public class RedisConfig {
     public ClientResources lettuceClientResources() {
         log.info("Configuring Lettuce ClientResources for high-performance Redis operations");
         return DefaultClientResources.builder()
-                .ioThreadPoolSize(4)  // Number of I/O threads (typically CPU cores)
-                .computationThreadPoolSize(4)  // Number of computation threads
+                .ioThreadPoolSize(4)
+                .computationThreadPoolSize(4)
                 .build();
     }
 
@@ -75,7 +75,7 @@ public class RedisConfig {
         SocketOptions socketOptions = SocketOptions.builder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .keepAlive(true)
-                .tcpNoDelay(true)  // Disable Nagle's algorithm for lower latency
+                .tcpNoDelay(true)
                 .build();
 
         TimeoutOptions timeoutOptions = TimeoutOptions.enabled(Duration.ofSeconds(120));
@@ -83,11 +83,14 @@ public class RedisConfig {
         return ClientOptions.builder()
                 .socketOptions(socketOptions)
                 .timeoutOptions(timeoutOptions)
-                .protocolVersion(ProtocolVersion.RESP3)  // Use RESP3 protocol for better performance
-                .autoReconnect(true)  // Enable auto-reconnection (reconnect-attempts: 3)
-                .suspendReconnectOnProtocolFailure(false)  // Continue reconnect on protocol failure
+                // RESP3 requires auth to happen before HELLO on Sentinel.
+                // setSentinelPassword() below handles that; if you still face
+                // handshake issues with older Sentinel versions, switch to RESP2.
+                .protocolVersion(ProtocolVersion.RESP3)
+                .autoReconnect(true)
+                .suspendReconnectOnProtocolFailure(false)
                 .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
-                .publishOnScheduler(true)  // Use dedicated scheduler for pub/sub
+                .publishOnScheduler(true)
                 .build();
     }
 
@@ -106,7 +109,6 @@ public class RedisConfig {
         poolConfig.setMinIdle(pool.getMinIdle());
         poolConfig.setMaxWait(pool.getMaxWait());
 
-        // Performance optimizations
         poolConfig.setTestOnBorrow(true);
         poolConfig.setTestOnReturn(false);
         poolConfig.setTestWhileIdle(true);
@@ -122,7 +124,6 @@ public class RedisConfig {
 
     /**
      * Configure High-Performance Lettuce Connection Factory with Sentinel Support
-     * This replaces Jedis with Lettuce for better performance and pooling
      */
     @Bean
     public LettuceConnectionFactory redisConnectionFactory(
@@ -134,13 +135,11 @@ public class RedisConfig {
 
         LettuceConnectionFactory factory;
 
-        // Check if Sentinel configuration is present
         if (redisProperties.getSentinel() != null && redisProperties.getSentinel().getMaster() != null) {
             log.info("Configuring Redis Sentinel mode");
             log.info("Sentinel Master: {}", redisProperties.getSentinel().getMaster());
             log.info("Sentinel Nodes: {}", redisProperties.getSentinel().getNodes());
 
-            // Redis Sentinel configuration
             RedisSentinelConfiguration sentinelConfig = new RedisSentinelConfiguration()
                     .master(redisProperties.getSentinel().getMaster());
 
@@ -153,16 +152,24 @@ public class RedisConfig {
                 }
             });
 
-            // Set password if configured
+            // ── FIX 1: Set the Redis DATA node password ──────────────────────────────
             if (redisProperties.getPassword() != null && !redisProperties.getPassword().isEmpty()) {
                 sentinelConfig.setPassword(redisProperties.getPassword());
-                log.info("Redis password configured for Sentinel");
+                log.info("Redis data-node password configured");
             }
 
-            // Set database
+            // ── FIX 2: Set the SENTINEL authentication password ──────────────────────
+            // Without this, Lettuce connects to Sentinel unauthenticated and Sentinel
+            // rejects the RESP3 HELLO handshake with:
+            //   "NOAUTH HELLO must be called with the client already authenticated"
+            RedisProperties.Sentinel sentinelProps = redisProperties.getSentinel();
+            if (sentinelProps.getPassword() != null && !sentinelProps.getPassword().isEmpty()) {
+                sentinelConfig.setSentinelPassword(sentinelProps.getPassword());
+                log.info("Sentinel authentication password configured");
+            }
+
             sentinelConfig.setDatabase(redisProperties.getDatabase());
 
-            // Lettuce client configuration with pooling
             LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
                     .clientOptions(clientOptions)
                     .clientResources(clientResources)
@@ -174,7 +181,6 @@ public class RedisConfig {
             log.info("LettuceConnectionFactory configured for Sentinel mode");
 
         } else {
-            // Fallback to standalone configuration if Sentinel is not configured
             log.info("Configuring Redis Standalone mode");
             log.info("Redis host: {}, port: {}", redisProperties.getHost(), redisProperties.getPort());
 
@@ -186,7 +192,6 @@ public class RedisConfig {
                 redisConfig.setPassword(redisProperties.getPassword());
             }
 
-            // Lettuce client configuration with pooling
             LettuceClientConfiguration clientConfig = LettucePoolingClientConfiguration.builder()
                     .clientOptions(clientOptions)
                     .clientResources(clientResources)
@@ -198,7 +203,7 @@ public class RedisConfig {
             log.info("LettuceConnectionFactory configured for Standalone mode");
         }
 
-        factory.setShareNativeConnection(false);  // Don't share connections for better concurrency
+        factory.setShareNativeConnection(false);
         factory.setValidateConnection(true);
 
         log.info("LettuceConnectionFactory configured successfully");
@@ -215,7 +220,6 @@ public class RedisConfig {
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(connectionFactory);
 
-        // Create ObjectMapper for JSON serialization
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
         objectMapper.activateDefaultTyping(
@@ -228,11 +232,8 @@ public class RedisConfig {
 
         GenericJackson2JsonRedisSerializer serializer = new GenericJackson2JsonRedisSerializer(objectMapper);
 
-        // Use String serializer for keys
         template.setKeySerializer(new StringRedisSerializer());
         template.setHashKeySerializer(new StringRedisSerializer());
-
-        // Use JSON serializer for values
         template.setValueSerializer(serializer);
         template.setHashValueSerializer(serializer);
 
@@ -251,7 +252,6 @@ public class RedisConfig {
         RedisTemplate<String, String> template = new RedisTemplate<>();
         template.setConnectionFactory(connectionFactory);
 
-        // Use String serializer for both keys and values
         StringRedisSerializer stringSerializer = new StringRedisSerializer();
         template.setKeySerializer(stringSerializer);
         template.setValueSerializer(stringSerializer);

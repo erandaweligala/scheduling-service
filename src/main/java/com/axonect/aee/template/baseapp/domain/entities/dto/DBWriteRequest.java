@@ -16,7 +16,7 @@ import java.util.Map;
 public class DBWriteRequest {
     private String eventId;
     private EventType eventType;
-    private LocalDateTime timestamp;
+    private Object timestamp;
     private String userName;
     private String sessionId;
     private Map<String, Object> columnValues;

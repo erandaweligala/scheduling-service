@@ -45,27 +45,26 @@ springdoc:
 spring:
   data:
     redis:
-      host: localhost
-      port: 6379
-      timeout: 3s
-      connect-timeout: 2s
       client-type: lettuce
-
+      password: "${REDIS_PASSWORD}"
+      timeout: 120000ms
+      sentinel:
+        master: "${REDIS_MASTER_NAME}"
+        nodes:
+          - redis-cluster-headless.cluster-redis.svc.cluster.local:26379
+        password: "${REDIS_NODE_PASSWORD}"
       lettuce:
-        shutdown-timeout: 100ms
         pool:
-          enabled: true
-          max-active: 150
-          max-idle: 100
-          min-idle: 20
-          max-wait: 1000ms
-          time-between-eviction-runs: 20s
-          min-evictable-idle-time: 240s
+          max-active: 600
+          max-wait: 3000ms
+          max-idle: 200
+          min-idle: 10
+        shutdown-timeout: 240000ms
   datasource:
     #    url: jdbc:oracle:thin:@aaa-dev.cn8eyeqma3tp.ap-southeast-2.rds.amazonaws.com:1521/ORCL
     url: jdbc:oracle:thin:@localhost:1524/ORCL
-    username: aaa
-    password: Aaa!89nky78D
+    username: "${DB_USER}"
+    password: "${DB_PASSWORD}"
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
       minimum-idle: 10  # Keep at least 10 connections ready
@@ -85,7 +84,7 @@ spring:
         v$session.program: scheduling-service
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: none
     show-sql: false
     properties:
       hibernate:
@@ -118,7 +117,7 @@ idle-session:
   timeout-minutes: 2               # Sessions idle longer than this will be terminated
   scheduler-interval-ms: 60000     # Scheduler fire interval in ms (default: 5 minutes)
   batch-size: 100                   # Max sessions to process per batch
-  db-write-topic: db-write-events   # Kafka topic for balance persistence events
+  db-write-topic: accounting-db-dc   # Kafka topic for balance persistence events
 
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
