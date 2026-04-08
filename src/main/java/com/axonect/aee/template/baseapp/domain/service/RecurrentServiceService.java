@@ -819,7 +819,7 @@ public class RecurrentServiceService {
             balance.setServiceStatus(serviceInstance.getStatus());
             balance.setTimeWindow(bucketInstance.getTimeWindow());
             balance.setConsumptionLimit(bucketInstance.getConsumptionLimit());
-            balance.setConsumptionLimitWindow(Long.valueOf(bucketInstance.getConsumptionLimitWindow()));
+            balance.setConsumptionLimitWindow(bucketInstance.getConsumptionLimitWindow() != null ? Long.valueOf(bucketInstance.getConsumptionLimitWindow()) : null);
             balance.setBucketUsername(serviceInstance.getUsername());
             balance.setUnlimited(bucketInstance.getIsUnlimited());
             balance.setGroup(Boolean.TRUE.equals(serviceInstance.getIsGroup()));
