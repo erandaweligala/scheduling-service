@@ -36,6 +36,7 @@ public class ServiceExpirationHandler {
      * @param serviceId        the PK of the ServiceInstance
      * @param bucketInstanceId the PK of the specific expired BucketInstance
      */
+    //todo both are delete to same publish event
     public void handleServiceExpiration(Long serviceId, Long bucketInstanceId) {
         log.info("TTL expired — serviceId: {}, bucketInstanceId: {}", serviceId, bucketInstanceId);
 
