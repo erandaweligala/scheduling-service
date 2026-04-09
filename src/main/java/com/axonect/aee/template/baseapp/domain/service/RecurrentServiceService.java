@@ -54,6 +54,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 @Service
@@ -300,10 +301,10 @@ public class RecurrentServiceService {
         // Provision quotas - bucket write requests are collected into relatedWrites
         provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap, relatedWrites);
 
-        // Publish ONE combined reactivateExpiredRecurrentServices event: service instance update
+        // Publish ONE combined reactivateExpiredRecurrentServices event: service instance insert
         // as the main event with all bucket instance writes as relatedWrites
         recurrentServiceProducer.publishDBWriteEvent(
-                buildServiceInstanceUpdateRequest(serviceInstance, relatedWrites),
+                buildServiceInstanceInsertRequest(serviceInstance, relatedWrites),
                 String.valueOf(serviceInstance.getId()));
         log.debug("Published reactivateExpiredRecurrentServices event for service ID: {}", serviceInstance.getId());
 
@@ -885,26 +886,42 @@ public class RecurrentServiceService {
         }
     }
 
-    private DBWriteRequest buildServiceInstanceUpdateRequest(ServiceInstance serviceInstance,
+    private DBWriteRequest buildServiceInstanceInsertRequest(ServiceInstance serviceInstance,
                                                               List<DBWriteRequest> relatedWrites) {
+        LocalDateTime now = LocalDateTime.now();
         Map<String, Object> columnValues = new HashMap<>();
+        columnValues.put("ID", generateInternalId());
+        columnValues.put("PLAN_ID", serviceInstance.getPlanId());
+        columnValues.put("PLAN_NAME", serviceInstance.getPlanName());
+        columnValues.put("PLAN_TYPE", serviceInstance.getPlanType());
+        columnValues.put("RECURRING_FLAG", serviceInstance.getRecurringFlag());
+        columnValues.put("USERNAME", serviceInstance.getUsername());
         columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate().format(FORMATTER));
         columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate().format(FORMATTER));
         columnValues.put("CYCLE_END_DATE", serviceInstance.getServiceCycleEndDate().format(FORMATTER));
-        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate().format(FORMATTER));
-
-        Map<String, Object> whereConditions = new HashMap<>();
-        whereConditions.put("ID", serviceInstance.getId());
+        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate() != null
+                ? serviceInstance.getNextCycleStartDate().format(FORMATTER) : null);
+        columnValues.put("EXPIRY_DATE", serviceInstance.getExpiryDate().format(FORMATTER));
+        columnValues.put("STATUS", serviceInstance.getStatus());
+        columnValues.put("REQUEST_ID", serviceInstance.getRequestId());
+        columnValues.put("IS_GROUP", serviceInstance.getIsGroup());
+        columnValues.put("CREATED_AT", now.format(FORMATTER));
+        columnValues.put("UPDATED_AT", now.format(FORMATTER));
 
         return DBWriteRequest.builder()
-                .eventType("UPDATE")
+                .eventType("INSERT")
                 .timestamp(Instant.now().toString())
                 .userName(serviceInstance.getUsername())
                 .tableName("SERVICE_INSTANCE")
                 .columnValues(columnValues)
-                .whereConditions(whereConditions)
                 .relatedWrites(relatedWrites.isEmpty() ? null : relatedWrites)
                 .build();
+    }
+
+    private Long generateInternalId() {
+        long timestampPart = System.currentTimeMillis() % 1_000_000;
+        int random = ThreadLocalRandom.current().nextInt(10_000);
+        return timestampPart * 10_000L + random;
     }
 
     private DBWriteRequest buildBucketInstanceInsertRequest(BucketInstance bucketInstance, String username) {
