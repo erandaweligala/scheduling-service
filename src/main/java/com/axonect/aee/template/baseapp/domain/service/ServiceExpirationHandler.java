@@ -9,8 +9,8 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
@@ -36,53 +36,40 @@ public class ServiceExpirationHandler {
      * @param serviceId        the PK of the ServiceInstance
      * @param bucketInstanceId the PK of the specific expired BucketInstance
      */
-    //todo both are delete to same publish event
     public void handleServiceExpiration(Long serviceId, Long bucketInstanceId) {
         log.info("TTL expired — serviceId: {}, bucketInstanceId: {}", serviceId, bucketInstanceId);
 
-        publishDeleteEvent(bucketInstanceTable, "ID", bucketInstanceId, "BucketInstance")
-                .whenComplete((result, ex) -> {
-                    if (ex != null) {
-                        log.error("Failed to publish BUCKET_INSTANCE DELETE for " +
-                                "bucketInstanceId: {} (serviceId: {})", bucketInstanceId, serviceId, ex);
-                    } else {
-                        log.info("BUCKET_INSTANCE DELETE published for bucketInstanceId: {} " +
-                                        "→ topic={}, partition={}, offset={}",
-                                bucketInstanceId,
-                                result.getRecordMetadata().topic(),
-                                result.getRecordMetadata().partition(),
-                                result.getRecordMetadata().offset());
-
-                        publishDeleteEvent(serviceInstanceTable, "ID", serviceId, "ServiceInstance")
-                                .whenComplete((res, e) -> {
-                                    if (e != null) {
-                                        log.error("Failed to publish SERVICE_INSTANCE DELETE " +
-                                                "for serviceId: {}", serviceId, e);
-                                    } else {
-                                        log.info("SERVICE_INSTANCE DELETE published for serviceId: {} " +
-                                                        "→ topic={}, partition={}, offset={}",
-                                                serviceId,
-                                                res.getRecordMetadata().topic(),
-                                                res.getRecordMetadata().partition(),
-                                                res.getRecordMetadata().offset());
-                                    }
-                                });
-                    }
-                });
-    }
-
-    private CompletableFuture<SendResult<String, Object>> publishDeleteEvent(
-            String tableName, String whereColumn, Long whereValue, String label) {
-
-        DBWriteRequest deleteRequest = DBWriteRequest.builder()
+        DBWriteRequest serviceInstanceDelete = DBWriteRequest.builder()
                 .eventType("DELETE")
-                .tableName(tableName)
-                .whereConditions(Map.of(whereColumn, whereValue))
+                .tableName(serviceInstanceTable)
+                .whereConditions(Map.of("ID", serviceId))
                 .timestamp(Instant.now().toString())
                 .userName("system")
                 .build();
 
-        log.debug("Publishing {} DELETE event for {}={}", label, whereColumn, whereValue);
-        return kafkaTemplate.send(dbWriteProvisioningTopic, String.valueOf(whereValue), deleteRequest);
+        DBWriteRequest bucketInstanceDelete = DBWriteRequest.builder()
+                .eventType("DELETE")
+                .tableName(bucketInstanceTable)
+                .whereConditions(Map.of("ID", bucketInstanceId))
+                .timestamp(Instant.now().toString())
+                .userName("system")
+                .relatedWrites(List.of(serviceInstanceDelete))
+                .build();
+
+        log.debug("Publishing combined DELETE event for bucketInstanceId={}, serviceId={}", bucketInstanceId, serviceId);
+        kafkaTemplate.send(dbWriteProvisioningTopic, String.valueOf(bucketInstanceId), bucketInstanceDelete)
+                .whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        log.error("Failed to publish DELETE event for bucketInstanceId: {} (serviceId: {})",
+                                bucketInstanceId, serviceId, ex);
+                    } else {
+                        log.info("Combined DELETE event published for bucketInstanceId: {}, serviceId: {} " +
+                                        "→ topic={}, partition={}, offset={}",
+                                bucketInstanceId, serviceId,
+                                result.getRecordMetadata().topic(),
+                                result.getRecordMetadata().partition(),
+                                result.getRecordMetadata().offset());
+                    }
+                });
     }
 }
