@@ -123,6 +123,15 @@ recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
 delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 
+# Service Instance lifecycle scheduler configuration
+service-instance-activation:
+  schedule: "0 0 1 * * ?"   # Run daily at 1:00 AM - flips PENDING -> ACTIVE
+  chunk-size: 500
+service-instance-cleanup:
+  schedule: "0 15 1 * * ?"  # Run daily at 1:15 AM - archives + deletes records whose
+                            # CYCLE_END_DATE or EXPIRY_DATE was yesterday
+  chunk-size: 200
+
 # Expiry Notification Configuration
 expiry-notification:
   batch-size: 100                              # Number of bucket instances to process per batch

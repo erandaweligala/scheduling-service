@@ -114,6 +114,14 @@ recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
 delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 
+# Service Instance lifecycle scheduler configuration
+service-instance-activation:
+  schedule: "0 0 1 * * ?"
+  chunk-size: 500
+service-instance-cleanup:
+  schedule: "0 15 1 * * ?"
+  chunk-size: 200
+
 # Idle Session Terminator Configuration
 idle-session:
   enabled: true                     # Set to false to disable the scheduler entirely
