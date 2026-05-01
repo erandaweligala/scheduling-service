@@ -69,4 +69,8 @@ public interface BucketInstanceRepository extends JpaRepository<BucketInstance,L
     @Modifying
     @Query("DELETE FROM BucketInstance b WHERE b.serviceId = :serviceId")
     int deleteAllByServiceId(@Param("serviceId") Long serviceId);
+
+    @Modifying
+    @Query("DELETE FROM BucketInstance b WHERE b.serviceId IN :serviceIds")
+    int deleteAllByServiceIdIn(@Param("serviceIds") Set<Long> serviceIds);
 }
