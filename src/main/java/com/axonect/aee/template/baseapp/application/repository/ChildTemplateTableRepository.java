@@ -15,7 +15,7 @@ public interface ChildTemplateTableRepository extends JpaRepository<ChildTemplat
 
     /**
      * Find all templates by message type
-     *
+     *x
      * @param messageType the type of message (e.g., "EXPIRE", "QUOTA")
      * @return list of templates matching the message type
      */

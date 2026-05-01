@@ -820,7 +820,7 @@ public class RecurrentServiceService {
             balance.setServiceStatus(serviceInstance.getStatus());
             balance.setTimeWindow(bucketInstance.getTimeWindow());
             balance.setConsumptionLimit(bucketInstance.getConsumptionLimit());
-            balance.setConsumptionLimitWindow(Long.valueOf(bucketInstance.getConsumptionLimitWindow()));
+            balance.setConsumptionLimitWindow(bucketInstance.getConsumptionLimitWindow() != null ?Long.valueOf(bucketInstance.getConsumptionLimitWindow()):null);
             balance.setBucketUsername(serviceInstance.getUsername());
             balance.setUnlimited(bucketInstance.getIsUnlimited());
             balance.setGroup(Boolean.TRUE.equals(serviceInstance.getIsGroup()));
@@ -902,7 +902,7 @@ public class RecurrentServiceService {
         columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate() != null
                 ? serviceInstance.getNextCycleStartDate().format(FORMATTER) : null);
         columnValues.put("EXPIRY_DATE", serviceInstance.getExpiryDate().format(FORMATTER));
-        columnValues.put("STATUS", serviceInstance.getStatus());
+        columnValues.put("STATUS", "PENDING");
         columnValues.put("REQUEST_ID", serviceInstance.getRequestId());
         columnValues.put("IS_GROUP", serviceInstance.getIsGroup());
         columnValues.put("CREATED_AT", now.format(FORMATTER));

@@ -60,10 +60,10 @@ public class ServiceExpirationHandler {
         kafkaTemplate.send(dbWriteProvisioningTopic, String.valueOf(bucketInstanceId), bucketInstanceDelete)
                 .whenComplete((result, ex) -> {
                     if (ex != null) {
-                        log.error("Failed to publish DELETE event for bucketInstanceId: {} (serviceId: {})",
+                        log.error("Failed to  DELETE event for bucketInstanceId: {} (serviceId: {})",
                                 bucketInstanceId, serviceId, ex);
                     } else {
-                        log.info("Combined DELETE event published for bucketInstanceId: {}, serviceId: {} " +
+                        log.info("Combined DELETE event  for bucketInstanceId: {}, serviceId: {} " +
                                         "→ topic={}, partition={}, offset={}",
                                 bucketInstanceId, serviceId,
                                 result.getRecordMetadata().topic(),
