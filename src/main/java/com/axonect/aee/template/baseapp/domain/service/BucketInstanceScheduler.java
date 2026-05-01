@@ -26,7 +26,7 @@ public class BucketInstanceScheduler {
     @Lazy
     private  BucketInstanceScheduler self;
 
-    @Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
+    //@Scheduled(cron = "${delete-expired-buckets.schedule:0 0 2 * * ?}")
     public void scheduleDeleteExpiredBuckets() {
         log.info("Starting scheduled deletion of expired bucket instances");
         try {

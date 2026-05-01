@@ -121,11 +121,11 @@ idle-session:
 
 recurrent-service.chunk-size: 100
 delete-expired-buckets.chunk-size: 100
-delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
+#delete-expired-buckets.schedule: "0 0 2 * * ?"  # Run daily at 2:00 AM
 
 # Service Instance lifecycle scheduler configuration
 service-instance-activation:
-  schedule: "0 0 1 * * ?"   # Run daily at 1:00 AM - flips PENDING -> ACTIVE
+  schedule: "0 30 0 * * ?"   # Run daily at 1:00 AM - flips PENDING -> ACTIVE
   chunk-size: 500
 service-instance-cleanup:
   schedule: "0 15 1 * * ?"  # Run daily at 1:15 AM - archives + deletes records whose
@@ -138,7 +138,7 @@ expiry-notification:
   schedule: "0 0 9 * * ?"                      # Run daily at 9:00 AM
 
 service-renewal:
-  schedule: "0 30 0 * * ?"
+  schedule: "0 0 3 * * ?"
   db-write-topic: accounting-db-dc
 
 # Kafka Configuration for Bucket Expiry Notifications
