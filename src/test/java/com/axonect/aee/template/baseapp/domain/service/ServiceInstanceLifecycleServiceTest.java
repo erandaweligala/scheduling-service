@@ -4,6 +4,7 @@ import com.axonect.aee.template.baseapp.application.repository.BucketInstanceHis
 import com.axonect.aee.template.baseapp.application.repository.BucketInstanceRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceHistoryRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
+import com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstanceHistory;
 import com.axonect.aee.template.baseapp.domain.entities.repo.ServiceInstance;
@@ -51,6 +52,8 @@ class ServiceInstanceLifecycleServiceTest {
     private ServiceInstanceHistoryRepository serviceInstanceHistoryRepository;
     @Mock
     private BucketInstanceHistoryRepository bucketInstanceHistoryRepository;
+    @Mock
+    private RecurrentServiceProducer recurrentServiceProducer;
 
     @InjectMocks
     private ServiceInstanceLifecycleService service;
@@ -91,6 +94,49 @@ class ServiceInstanceLifecycleServiceTest {
         verify(serviceInstanceRepository, times(2))
                 .bulkUpdateStatus(anyCollection(), eq(Constants.PENDING),
                         eq(Constants.ACTIVE), any(LocalDateTime.class));
+    }
+
+    @Test
+    @DisplayName("Activation publishes one UPDATE DB write event per service in chunk")
+    void activatePendingServiceInstances_publishesKafkaEvents() {
+        ServiceInstance s1 = serviceWithId(1L);
+        ServiceInstance s2 = serviceWithId(2L);
+
+        when(serviceInstanceRepository.findByStatus(eq(Constants.PENDING), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(s1, s2)))
+                .thenReturn(new PageImpl<>(Collections.emptyList()));
+        when(serviceInstanceRepository.bulkUpdateStatus(anyCollection(),
+                eq(Constants.PENDING), eq(Constants.ACTIVE), any(LocalDateTime.class)))
+                .thenReturn(2);
+
+        service.activatePendingServiceInstances("batch-kafka");
+
+        ArgumentCaptor<DBWriteRequest> requestCaptor = ArgumentCaptor.forClass(DBWriteRequest.class);
+        verify(recurrentServiceProducer, times(2))
+                .publishDBWriteEvent(requestCaptor.capture(), anyString());
+        assertThat(requestCaptor.getAllValues())
+                .extracting(DBWriteRequest::getEventType)
+                .containsOnly("UPDATE");
+        assertThat(requestCaptor.getAllValues())
+                .extracting(DBWriteRequest::getTableName)
+                .containsOnly("SERVICE_INSTANCE");
+        assertThat(requestCaptor.getAllValues())
+                .allMatch(r -> Constants.ACTIVE.equals(r.getColumnValues().get("STATUS")));
+    }
+
+    @Test
+    @DisplayName("Activation skips Kafka events when no rows were updated")
+    void activatePendingServiceInstances_skipsKafkaWhenZeroUpdated() {
+        ServiceInstance s1 = serviceWithId(1L);
+        when(serviceInstanceRepository.findByStatus(eq(Constants.PENDING), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(s1)));
+        when(serviceInstanceRepository.bulkUpdateStatus(anyCollection(),
+                eq(Constants.PENDING), eq(Constants.ACTIVE), any(LocalDateTime.class)))
+                .thenReturn(0);
+
+        service.activatePendingServiceInstances("batch-zero");
+
+        verify(recurrentServiceProducer, never()).publishDBWriteEvent(any(), anyString());
     }
 
     @Test
@@ -178,6 +224,42 @@ class ServiceInstanceLifecycleServiceTest {
     }
 
     @Test
+    @DisplayName("Cleanup publishes a bundled DELETE event per service with related history inserts and bucket deletes")
+    void cleanupExpiredServiceInstances_publishesKafkaEvents() {
+        LocalDate yesterday = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE)).minusDays(1);
+        ServiceInstance s1 = serviceWithId(301L);
+        s1.setServiceCycleEndDate(yesterday.atTime(8, 0));
+        s1.setExpiryDate(yesterday.plusDays(10).atStartOfDay());
+
+        BucketInstance b1 = bucket(31L, 301L);
+
+        when(serviceInstanceRepository.findByCycleEndOrExpiryWithinDay(
+                any(LocalDateTime.class), any(LocalDateTime.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(s1)))
+                .thenReturn(new PageImpl<>(Collections.emptyList()));
+        when(bucketInstanceRepository.findByServiceIdIn(any(Set.class))).thenReturn(List.of(b1));
+        when(bucketInstanceRepository.deleteAllByServiceIdIn(any(Set.class))).thenReturn(1);
+        when(serviceInstanceRepository.deleteAllByIdIn(anyCollection())).thenReturn(1);
+
+        service.cleanupExpiredServiceInstances("batch-kafka");
+
+        ArgumentCaptor<DBWriteRequest> requestCaptor = ArgumentCaptor.forClass(DBWriteRequest.class);
+        verify(recurrentServiceProducer).publishDBWriteEvent(requestCaptor.capture(), eq("301"));
+
+        DBWriteRequest mainEvent = requestCaptor.getValue();
+        assertThat(mainEvent.getEventType()).isEqualTo("DELETE");
+        assertThat(mainEvent.getTableName()).isEqualTo("SERVICE_INSTANCE");
+        assertThat(mainEvent.getWhereConditions()).containsEntry("ID", 301L);
+        assertThat(mainEvent.getRelatedWrites()).isNotNull();
+        assertThat(mainEvent.getRelatedWrites())
+                .extracting(DBWriteRequest::getTableName)
+                .containsExactly("SERVICE_INSTANCE_HISTORY", "BUCKET_INSTANCE_HISTORY", "BUCKET_INSTANCE");
+        assertThat(mainEvent.getRelatedWrites())
+                .extracting(DBWriteRequest::getEventType)
+                .containsExactly("INSERT", "INSERT", "DELETE");
+    }
+
+    @Test
     @DisplayName("Cleanup with no candidates is a no-op")
     void cleanupExpiredServiceInstances_noCandidates() {
         when(serviceInstanceRepository.findByCycleEndOrExpiryWithinDay(
@@ -193,6 +275,7 @@ class ServiceInstanceLifecycleServiceTest {
         verify(bucketInstanceHistoryRepository, never()).saveAll(any());
         verify(bucketInstanceRepository, never()).deleteAllByServiceIdIn(any());
         verify(serviceInstanceRepository, never()).deleteAllByIdIn(any());
+        verify(recurrentServiceProducer, never()).publishDBWriteEvent(any(), anyString());
     }
 
     @Test
