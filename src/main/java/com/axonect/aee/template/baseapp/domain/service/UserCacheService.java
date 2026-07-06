@@ -4,7 +4,6 @@ import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.exception.CacheOperationException;
 import com.axonect.aee.template.baseapp.domain.exception.CacheSerializationException;
 import com.axonect.aee.template.baseapp.domain.exception.CacheTimeoutException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -40,7 +39,8 @@ public class UserCacheService {
     private static final String GROUP_KEY_PREFIX = "group:";
 
     private final RedisTemplate<String, String> redisTemplateString;
-    private final ObjectMapper objectMapper;
+    private final RedisTemplate<String, byte[]> redisTemplateBytes;
+    private final SessionCacheCodec sessionCacheCodec;
 
     // Thread pool for parallel operations (optimized for high TPS)
     private final ExecutorService executorService = Executors.newFixedThreadPool(
@@ -65,16 +65,16 @@ public class UserCacheService {
         String key = KEY_PREFIX + userId;
 
         try {
-            String json = fetchUserDataFromRedis(key);
+            byte[] payload = fetchUserDataFromRedis(key);
 
-            if (json == null) {
+            if (payload == null || payload.length == 0) {
                 if (log.isDebugEnabled()) {
                     log.debug("No user data found for userId: {}", userId);
                 }
                 return null;
             }
 
-            UserSessionData userData = deserializeUserData(json, userId);
+            UserSessionData userData = deserializeUserData(payload, userId);
 
             if (log.isDebugEnabled()) {
                 log.debug("User data retrieved for userId: {} in {} ms",
@@ -92,18 +92,18 @@ public class UserCacheService {
     }
 
     @SuppressWarnings("java:S112")
-    private String fetchUserDataFromRedis(String key) throws Exception {
-        CompletableFuture<String> future = CompletableFuture.supplyAsync(() ->
-                redisTemplateString.opsForValue().get(key), executorService);
+    private byte[] fetchUserDataFromRedis(String key) throws Exception {
+        CompletableFuture<byte[]> future = CompletableFuture.supplyAsync(() ->
+                redisTemplateBytes.opsForValue().get(key), executorService);
         return future.get(5, TimeUnit.SECONDS);
     }
 
     /**
-     * Deserializes JSON string to UserSessionData object
+     * Deserializes a raw Redis payload (CBOR, or legacy JSON) to a UserSessionData object.
      */
-    private UserSessionData deserializeUserData(String json, String userId) {
+    private UserSessionData deserializeUserData(byte[] payload, String userId) {
         try {
-            return objectMapper.readValue(json, UserSessionData.class);
+            return sessionCacheCodec.decode(payload);
         } catch (Exception e) {
             log.error("Failed to deserialize user data for userId: {} - {}", userId, e.getMessage());
             throw new CacheSerializationException("Failed to deserialize user data", e);
@@ -128,12 +128,12 @@ public class UserCacheService {
 
         try {
             removeExpiredBalanceElements(userData);
-            String jsonValue = objectMapper.writeValueAsString(userData);
+            byte[] encoded = sessionCacheCodec.encode(userData);
 
             if (shouldUpdateGroupCache(userData)) {
-                updateUserAndGroupCache(userId, userName, userKey, jsonValue, userData);
+                updateUserAndGroupCache(userId, userName, userKey, encoded, userData);
             } else {
-                updateUserCacheOnly(userId, userKey, jsonValue);
+                updateUserCacheOnly(userId, userKey, encoded);
             }
 
         } catch (InterruptedException e) {
@@ -150,13 +150,13 @@ public class UserCacheService {
     }
 
     private void updateUserAndGroupCache(String userId, String userName, String userKey,
-                                        String jsonValue, UserSessionData userData) throws Exception {
+                                        byte[] encoded, UserSessionData userData) throws Exception {
         String groupKey = GROUP_KEY_PREFIX + userName;
         String groupValues = userData.getGroupId() + "," + userData.getConcurrency() + ","
                 + userData.getUserStatus() + "," + userData.getSessionTimeOut();
 
         CompletableFuture<Void> userFuture = CompletableFuture.runAsync(() ->
-                redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
+                redisTemplateBytes.opsForValue().set(userKey, encoded), executorService);
 
         CompletableFuture<Void> groupFuture = CompletableFuture.runAsync(() ->
                 redisTemplateString.opsForValue().set(groupKey, groupValues), executorService);
@@ -168,9 +168,9 @@ public class UserCacheService {
         }
     }
 
-    private void updateUserCacheOnly(String userId, String userKey, String jsonValue) throws Exception {
+    private void updateUserCacheOnly(String userId, String userKey, byte[] encoded) throws Exception {
         CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
-                redisTemplateString.opsForValue().set(userKey, jsonValue), executorService);
+                redisTemplateBytes.opsForValue().set(userKey, encoded), executorService);
 
         future.get(8, TimeUnit.SECONDS);
 
@@ -309,15 +309,15 @@ public class UserCacheService {
         }
 
         try {
-            List<String> values = redisTemplateString.opsForValue().multiGet(keys);
+            List<byte[]> values = redisTemplateBytes.opsForValue().multiGet(keys);
             Map<String, UserSessionData> result = new HashMap<>(userIds.size() * 2);
 
             if (values != null) {
                 for (int i = 0; i < userIds.size(); i++) {
-                    String value = values.get(i);
-                    if (value != null && !value.isEmpty()) {
+                    byte[] value = values.get(i);
+                    if (value != null && value.length > 0) {
                         try {
-                            UserSessionData userData = objectMapper.readValue(value, UserSessionData.class);
+                            UserSessionData userData = sessionCacheCodec.decode(value);
                             result.put(userIds.get(i), userData);
                         } catch (Exception e) {
                             log.error("Failed to deserialize user data for userId: {} - {}",
@@ -369,16 +369,16 @@ public class UserCacheService {
         }
 
         log.info("Backfill scan found {} user keys; fetching values via MGET", userKeys.size());
-        List<String> values = redisTemplateString.opsForValue().multiGet(userKeys);
+        List<byte[]> values = redisTemplateBytes.opsForValue().multiGet(userKeys);
         Map<String, UserSessionData> result = new HashMap<>(userKeys.size() * 2);
 
         if (values != null) {
             for (int i = 0; i < userKeys.size(); i++) {
-                String value = values.get(i);
-                if (value == null || value.isEmpty()) continue;
+                byte[] value = values.get(i);
+                if (value == null || value.length == 0) continue;
                 String userId = userKeys.get(i).substring(KEY_PREFIX.length());
                 try {
-                    result.put(userId, objectMapper.readValue(value, UserSessionData.class));
+                    result.put(userId, sessionCacheCodec.decode(value));
                 } catch (Exception e) {
                     log.error("Failed to deserialize user data for key {}: {}", userKeys.get(i), e.getMessage());
                 }
