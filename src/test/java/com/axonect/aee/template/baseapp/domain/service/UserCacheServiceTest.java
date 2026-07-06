@@ -4,8 +4,6 @@ import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.exception.CacheOperationException;
 import com.axonect.aee.template.baseapp.domain.exception.CacheSerializationException;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,7 +22,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,7 +34,13 @@ class UserCacheServiceTest {
     private ValueOperations<String, String> valueOperations;
 
     @Mock
-    private ObjectMapper objectMapper;
+    private RedisTemplate<String, byte[]> redisTemplateBytes;
+
+    @Mock
+    private ValueOperations<String, byte[]> byteValueOperations;
+
+    @Mock
+    private SessionCacheCodec sessionCacheCodec;
 
     @InjectMocks
     private UserCacheService userCacheService;
@@ -46,30 +49,33 @@ class UserCacheServiceTest {
     private final String userName = "testUser";
     private final String userKey = "user:123";
 
+    // CBOR map header byte (0xBF) - not a JSON '{', mirrors a real binary payload
+    private final byte[] encoded = new byte[]{(byte) 0xBF, 0x01, 0x02};
+
     @BeforeEach
     void setUp() {
         lenient().when(redisTemplateString.opsForValue()).thenReturn(valueOperations);
+        lenient().when(redisTemplateBytes.opsForValue()).thenReturn(byteValueOperations);
     }
 
     // --- getUserData Tests ---
 
     @Test
     void getUserData_Success() throws Exception {
-        String json = "{\"userId\":\"123\"}";
         UserSessionData expectedData = new UserSessionData();
 
-        when(valueOperations.get(userKey)).thenReturn(json);
-        when(objectMapper.readValue(json, UserSessionData.class)).thenReturn(expectedData);
+        when(byteValueOperations.get(userKey)).thenReturn(encoded);
+        when(sessionCacheCodec.decode(encoded)).thenReturn(expectedData);
 
         UserSessionData result = userCacheService.getUserData(userId);
 
         assertThat(result).isNotNull();
-        verify(valueOperations).get(userKey);
+        verify(byteValueOperations).get(userKey);
     }
 
     @Test
     void getUserData_NotFound_ReturnsNull() {
-        when(valueOperations.get(userKey)).thenReturn(null);
+        when(byteValueOperations.get(userKey)).thenReturn(null);
 
         UserSessionData result = userCacheService.getUserData(userId);
 
@@ -78,9 +84,9 @@ class UserCacheServiceTest {
 
     @Test
     void getUserData_DeserializationError_ThrowsException() throws Exception {
-        when(valueOperations.get(userKey)).thenReturn("{}");
-        when(objectMapper.readValue(anyString(), eq(UserSessionData.class)))
-                .thenThrow(new RuntimeException("Jackson error"));
+        when(byteValueOperations.get(userKey)).thenReturn(encoded);
+        when(sessionCacheCodec.decode(any()))
+                .thenThrow(new RuntimeException("CBOR error"));
 
         assertThatThrownBy(() -> userCacheService.getUserData(userId))
                 .isInstanceOf(CacheSerializationException.class);
@@ -90,34 +96,32 @@ class UserCacheServiceTest {
 
     @Test
     @SuppressWarnings("java:S6068")
-    void updateUserAndRelatedCaches_OnlyUserCache_Success() throws JsonProcessingException {
+    void updateUserAndRelatedCaches_OnlyUserCache_Success() throws Exception {
         UserSessionData data = new UserSessionData();
         data.setGroupId("1"); // Should trigger only user cache update
-        String json = "{}";
 
-        when(objectMapper.writeValueAsString(data)).thenReturn(json);
+        when(sessionCacheCodec.encode(data)).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, data, userName);
 
-        verify(valueOperations).set(eq(userKey), eq(json));
+        verify(byteValueOperations).set(userKey, encoded);
         verify(valueOperations, never()).set(contains("group:"), anyString());
     }
 
     @Test
     @SuppressWarnings("java:S6068")
-    void updateUserAndRelatedCaches_WithGroupCache_Success() throws JsonProcessingException {
+    void updateUserAndRelatedCaches_WithGroupCache_Success() throws Exception {
         UserSessionData data = new UserSessionData();
         data.setGroupId("99"); // Not "1", triggers group update
         data.setConcurrency(5);
         data.setUserStatus("ACTIVE");
         data.setSessionTimeOut("3600");
-        String json = "{}";
 
-        when(objectMapper.writeValueAsString(data)).thenReturn(json);
+        when(sessionCacheCodec.encode(data)).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, data, userName);
 
-        verify(valueOperations).set(eq(userKey), eq(json));
+        verify(byteValueOperations).set(userKey, encoded);
         verify(valueOperations).set(eq("group:" + userName), contains("99,5,ACTIVE,3600"));
     }
 
@@ -125,7 +129,7 @@ class UserCacheServiceTest {
     // --- Balance Cleanup Tests (removeExpiredBalanceElements) ---
 
     @Test
-    void removeExpiredBalanceElements_RemovesOldBuckets() throws JsonProcessingException {
+    void removeExpiredBalanceElements_RemovesOldBuckets() throws Exception {
         UserSessionData data = new UserSessionData();
         List<Balance> balances = new ArrayList<>();
 
@@ -143,7 +147,7 @@ class UserCacheServiceTest {
         data.setBalance(balances);
         data.setGroupId("1");
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, data, userName);
 
@@ -222,16 +226,16 @@ class UserCacheServiceTest {
 
 
     @Test
-    void getUserData_ReturnNullWhenJsonMissing() {
-        when(valueOperations.get(anyString())).thenReturn(null);
+    void getUserData_ReturnNullWhenPayloadMissing() {
+        when(byteValueOperations.get(anyString())).thenReturn(null);
         assertNull(userCacheService.getUserData(userId));
     }
 
     @Test
     void getUserData_ThrowsSerializationException() throws Exception {
-        when(valueOperations.get(anyString())).thenReturn("{}");
-        when(objectMapper.readValue(anyString(), eq(UserSessionData.class)))
-                .thenThrow(new RuntimeException("Jackson error"));
+        when(byteValueOperations.get(anyString())).thenReturn(encoded);
+        when(sessionCacheCodec.decode(any()))
+                .thenThrow(new RuntimeException("CBOR error"));
 
         assertThrows(CacheSerializationException.class, () -> userCacheService.getUserData(userId));
     }
@@ -247,11 +251,11 @@ class UserCacheServiceTest {
         testData.setUserStatus("active");
         testData.setSessionTimeOut("3600");
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 
-        verify(valueOperations, times(1)).set(eq("user:123"), anyString());
+        verify(byteValueOperations, times(1)).set(eq("user:123"), any());
         verify(valueOperations, times(1)).set(startsWith("group:"), anyString());
     }
 
@@ -259,11 +263,11 @@ class UserCacheServiceTest {
     void updateUserAndRelatedCaches_UserOnly_WhenGroupIdIsOne() throws Exception {
         UserSessionData testData = new UserSessionData();
         testData.setGroupId("1"); // Triggers shouldUpdateGroupCache -> false
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 
-        verify(valueOperations, times(1)).set(eq("user:123"), anyString());
+        verify(byteValueOperations, times(1)).set(eq("user:123"), any());
         verify(valueOperations, never()).set(startsWith("group:"), anyString());
     }
 
@@ -289,7 +293,7 @@ class UserCacheServiceTest {
         testData.setBalance(balances);
         testData.setGroupId("1");
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 
@@ -303,11 +307,11 @@ class UserCacheServiceTest {
     void updateUserAndRelatedCaches_GroupUpdate_True() throws Exception {
         UserSessionData testData = new UserSessionData();
         testData.setGroupId("99");
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 
-        verify(valueOperations).set(eq("user:123"), anyString());
+        verify(byteValueOperations).set(eq("user:123"), any());
         verify(valueOperations).set(startsWith("group:"), anyString());
     }
 
@@ -315,11 +319,11 @@ class UserCacheServiceTest {
     void updateUserAndRelatedCaches_GroupUpdate_False_WhenGroupIdIsOne() throws Exception {
         UserSessionData testData = new UserSessionData();
         testData.setGroupId("1");
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 
-        verify(valueOperations).set(eq("user:123"), anyString());
+        verify(byteValueOperations).set(eq("user:123"), any());
         verify(valueOperations, never()).set(startsWith("group:"), anyString());
     }
 
@@ -343,7 +347,7 @@ class UserCacheServiceTest {
         testData.setBalance(balances);
         testData.setGroupId("1"); // Simplify update path
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(sessionCacheCodec.encode(any())).thenReturn(encoded);
 
         userCacheService.updateUserAndRelatedCaches(userId, testData, userName);
 

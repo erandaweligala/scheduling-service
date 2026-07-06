@@ -28,6 +28,7 @@ import org.springframework.data.redis.connection.lettuce.LettucePoolingClientCon
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
+import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
@@ -257,6 +258,34 @@ public class RedisConfig {
         template.setValueSerializer(stringSerializer);
         template.setHashKeySerializer(stringSerializer);
         template.setHashValueSerializer(stringSerializer);
+
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    /**
+     * Configure RedisTemplate for String-key to raw-byte-value operations.
+     * <p>
+     * Used by {@code UserCacheService} for {@code user:*} session payloads, which
+     * are stored as binary CBOR by the AAA service. A pass-through byte serializer
+     * is required here: routing these payloads through a {@link StringRedisSerializer}
+     * would UTF-8 decode the binary bytes and corrupt them into U+FFFD replacement
+     * characters, breaking deserialization.
+     */
+    @Bean
+    public RedisTemplate<String, byte[]> redisTemplateBytes(RedisConnectionFactory connectionFactory) {
+        log.info("Initializing RedisTemplate<String, byte[]> for binary session payloads");
+
+        RedisTemplate<String, byte[]> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+
+        StringRedisSerializer keySerializer = new StringRedisSerializer();
+        RedisSerializer<byte[]> valueSerializer = RedisSerializer.byteArray();
+
+        template.setKeySerializer(keySerializer);
+        template.setValueSerializer(valueSerializer);
+        template.setHashKeySerializer(keySerializer);
+        template.setHashValueSerializer(valueSerializer);
 
         template.afterPropertiesSet();
         return template;

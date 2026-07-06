@@ -113,6 +113,17 @@
             <artifactId>jackson-datatype-jsr310</artifactId>
             <version>2.16.0</version>
         </dependency>
+        <!-- Binary CBOR codec + Blackbird accessors for user session cache interop -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-cbor</artifactId>
+            <version>2.16.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-blackbird</artifactId>
+            <version>2.16.0</version>
+        </dependency>
         <dependency>
             <groupId>cn.dev33</groupId>
             <artifactId>sa-token-core</artifactId>
