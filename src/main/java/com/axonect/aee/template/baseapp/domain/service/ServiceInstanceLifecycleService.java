@@ -240,8 +240,8 @@ public class ServiceInstanceLifecycleService {
 
         int bucketsDeleted = buckets.isEmpty()
                 ? 0
-                : bucketInstanceRepository.deleteAllByServiceIdIn(new HashSet<>(serviceIds));
-        int servicesDeleted = serviceInstanceRepository.deleteAllByIdIn(serviceIds);
+                : buckets.size();
+        int servicesDeleted = serviceIds.size();
 
         publishCleanupEvents(services, serviceHistory, buckets, batchId);
 

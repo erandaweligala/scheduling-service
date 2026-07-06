@@ -15,7 +15,7 @@ import java.util.List;
 @Builder(toBuilder = true)
 public class UserSessionData {
     private String sessionTimeOut;
-    private String userStatus; // if bard user consume with global plan
+    private String userStatus; //if bard user consume with global plan
     private String userName;
     private String groupId;
     private long concurrency;

@@ -11,8 +11,6 @@ import lombok.*;
 @AllArgsConstructor
 @Builder
 public class QosParam {
-    private String qosProfileId;
-    private Integer bandwidthLimit;
-    private Integer latencyThreshold;
-    private String priority;
+    private String normalBandwidth;
+    private String fupBandwidth;
 }

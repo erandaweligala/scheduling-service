@@ -21,7 +21,7 @@ public class Session {
     private String framedId;
     private String nasIp;
     private String nasPortId;
-    private boolean isNewSession;
+    private long sessionUsage;
     private long availableBalance;
     private String groupId;
     private String userName;
@@ -29,11 +29,5 @@ public class Session {
     private String absoluteTimeOut;
     private String userStatus;
     private long userConcurrency;
-    /**
-     * Epoch milliseconds of the session's last known activity.
-     * Set by the AAA service on each accounting update (Interim-Update / Stop).
-     * When 0 (absent), the expiry index backfill uses the current time as a safe default.
-     */
-    private long lastActivityTime;
 
 }
