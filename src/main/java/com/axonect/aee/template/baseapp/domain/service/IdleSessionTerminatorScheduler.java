@@ -5,7 +5,9 @@ import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
 import com.axonect.aee.template.baseapp.domain.entities.dto.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Session;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
+import com.axonect.aee.template.baseapp.domain.entities.dto.cdr.AccountingCdrEvent;
 import com.axonect.aee.template.baseapp.domain.enums.EventType;
+import com.axonect.aee.template.baseapp.domain.util.CdrMappingUtil;
 import com.axonect.aee.template.baseapp.domain.util.MappingUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -249,6 +251,9 @@ public class IdleSessionTerminatorScheduler {
         // Trigger DB write operations for terminated sessions to persist balance state
         triggerDBRequestInitiate(sessionsToTerminate, userData);
 
+        // Generate a CDR (Call Detail Record) and publish a Kafka event for each terminated session
+        generateIdleTimeoutCdrEvents(sessionsToTerminate, userData);
+
         // Update cache after DB write is initiated
         try {
             userCacheService.updateUserAndRelatedCaches(userName, userData, userName);
@@ -340,6 +345,41 @@ public class IdleSessionTerminatorScheduler {
 
         for (Session session : sessionsToTerminate) {
             processSessionForDBWrite(session, balances);
+        }
+    }
+
+    /**
+     * Generates a Stop CDR and publishes a Kafka event for each session terminated
+     * due to idle timeout. Failures are logged per-session and never abort the
+     * termination flow for the remaining sessions.
+     *
+     * @param sessionsToTerminate the sessions being terminated
+     * @param userData            user session data used to backfill user identity
+     */
+    private void generateIdleTimeoutCdrEvents(List<Session> sessionsToTerminate, UserSessionData userData) {
+        if (sessionsToTerminate == null || sessionsToTerminate.isEmpty()) {
+            return;
+        }
+
+        for (Session session : sessionsToTerminate) {
+            try {
+                // Backfill user identity from the cache entry when the session omits it
+                if (session.getUserName() == null) {
+                    session.setUserName(userData.getUserName());
+                }
+                if (session.getGroupId() == null) {
+                    session.setGroupId(userData.getGroupId());
+                }
+
+                AccountingCdrEvent cdrEvent = CdrMappingUtil.buildIdleTimeoutStopCdrEvent(session);
+                accountProducer.produceCdrEvent(cdrEvent);
+
+                log.debug("[{}] Generated idle-timeout CDR event for session: {}",
+                        M_PROCESS, session.getSessionId());
+            } catch (Exception e) {
+                log.error("[{}] Failed to generate CDR event for session: {}",
+                        M_PROCESS, session.getSessionId(), e);
+            }
         }
     }
 

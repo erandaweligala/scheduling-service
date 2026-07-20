@@ -42,4 +42,9 @@ public class IdleSessionConfig {
      * Kafka topic for DB write events produced on session termination.
      */
     private String dbWriteTopic = "db-write-events";
+
+    /**
+     * Kafka topic for accounting CDR events produced on session termination.
+     */
+    private String cdrTopic = "accounting-cdr-events";
 }
