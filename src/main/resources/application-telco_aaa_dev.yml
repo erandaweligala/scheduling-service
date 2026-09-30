@@ -139,7 +139,6 @@ expiry-notification:
 #Service Renewal Configuration
 service-renewal:
   schedule: "0 30 0 * * ?"
-  db-write-topic: accounting-db-dc
 
   
 # Kafka Configuration for Bucket Expiry Notifications

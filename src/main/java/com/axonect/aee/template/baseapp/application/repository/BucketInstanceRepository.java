@@ -11,6 +11,7 @@ import org.springframework.data.repository.query.Param;
 
 import jakarta.persistence.QueryHint;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -72,5 +73,17 @@ public interface BucketInstanceRepository extends JpaRepository<BucketInstance,L
 
     @Modifying
     @Query("DELETE FROM BucketInstance b WHERE b.serviceId IN :serviceIds")
-    int deleteAllByServiceIdIn(@Param("serviceIds") Set<Long> serviceIds);
+    int deleteAllByServiceIdIn(@Param("serviceIds") Collection<Long> serviceIds);
+
+    /**
+     * Set CURRENT_BALANCE on a single bucket instance without loading it first
+     * (saving a detached entity would issue a SELECT before the UPDATE).
+     * UPDATED_AT is refreshed because @UpdateTimestamp is bypassed for bulk JPQL.
+     */
+    @Modifying
+    @Query("UPDATE BucketInstance b SET b.currentBalance = :currentBalance, b.updatedAt = :updatedAt " +
+            "WHERE b.id = :id")
+    int updateCurrentBalance(@Param("id") Long id,
+                             @Param("currentBalance") Long currentBalance,
+                             @Param("updatedAt") LocalDateTime updatedAt);
 }

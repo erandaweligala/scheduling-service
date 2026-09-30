@@ -4,6 +4,7 @@ import com.axonect.aee.template.baseapp.application.repository.*;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.repo.*;
 import com.axonect.aee.template.baseapp.domain.exception.AAAException;
+import com.axonect.aee.template.baseapp.domain.util.Constants;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -107,17 +108,29 @@ class RecurrentServiceServiceTest {
 
         // Ensure BucketInstance has the serviceId key
         BucketInstance bi = new BucketInstance();
+        bi.setId(10L);
         bi.setServiceId(1L);
         bi.setBucketId("b1");
+        bi.setBucketType("DATA");
+        bi.setCurrentBalance(40L);
+        bi.setExpiration(LocalDateTime.now().plusDays(1));
         when(bucketInstanceRepository.findByServiceIdIn(any())).thenReturn(List.of(bi));
 
         when(bucketRepository.findByBucketIdIn(any())).thenReturn(List.of(bucket));
         when(qosProfileRepository.findByIdIn(any())).thenReturn(List.of(qosProfile));
+        when(serviceInstanceRepository.saveAndFlush(any(ServiceInstance.class)))
+                .thenReturn(ServiceInstance.builder().id(900L).build());
 
         // Run service
         recurrentServiceService.reactivateExpiredRecurrentServices();
 
-        verify(serviceInstanceRepository, atLeastOnce()).save(any());
+        verify(serviceInstanceRepository, times(1)).saveAndFlush(any(ServiceInstance.class));
+        ArgumentCaptor<List<BucketInstance>> buckets = ArgumentCaptor.forClass(List.class);
+        verify(bucketInstanceRepository).saveAll(buckets.capture());
+        // One new quota bucket plus one carry-forward bucket, both owned by the inserted service row
+        assertEquals(2, buckets.getValue().size());
+        assertTrue(buckets.getValue().stream().allMatch(b -> Long.valueOf(900L).equals(b.getServiceId())));
+        verify(serviceProcessingFailureRepository, never()).save(any());
     }
 
     @Test
@@ -178,6 +191,8 @@ class RecurrentServiceServiceTest {
 
         // 2. Mocking
         when(userCacheService.getUserData(username)).thenReturn(new UserSessionData());
+        when(serviceInstanceRepository.saveAndFlush(any(ServiceInstance.class)))
+                .thenReturn(ServiceInstance.builder().id(500L).build());
 
         // 3. Execution
         assertDoesNotThrow(() -> {
@@ -188,9 +203,99 @@ class RecurrentServiceServiceTest {
         });
 
         // 4. Verifications
-        verify(serviceInstanceRepository, times(1)).save(any(ServiceInstance.class));
-        verify(bucketInstanceRepository, atLeastOnce()).saveAll(any());
-        verify(userCacheService, times(1)).updateUserAndRelatedCaches(eq(username), any(), eq(username));
+        ArgumentCaptor<ServiceInstance> inserted = ArgumentCaptor.forClass(ServiceInstance.class);
+        verify(serviceInstanceRepository, times(1)).saveAndFlush(inserted.capture());
+        assertNull(inserted.getValue().getId());
+        assertEquals(Constants.PENDING, inserted.getValue().getStatus());
+        assertEquals(serviceInstance.getServiceCycleStartDate(), inserted.getValue().getServiceCycleStartDate());
+        assertEquals(serviceInstance.getServiceCycleEndDate(), inserted.getValue().getServiceCycleEndDate());
+        verify(serviceInstanceRepository, never()).save(any());
+
+        ArgumentCaptor<List<BucketInstance>> buckets = ArgumentCaptor.forClass(List.class);
+        verify(bucketInstanceRepository).saveAll(buckets.capture());
+        assertEquals(2, buckets.getValue().size());
+        assertTrue(buckets.getValue().stream().allMatch(b -> Long.valueOf(500L).equals(b.getServiceId())));
+        verify(bucketInstanceRepository, never()).updateCurrentBalance(any(), any(), any());
+
+        InOrder order = inOrder(serviceInstanceRepository, bucketInstanceRepository, userCacheService);
+        order.verify(serviceInstanceRepository).saveAndFlush(any(ServiceInstance.class));
+        order.verify(bucketInstanceRepository).saveAll(any());
+        order.verify(userCacheService).updateUserAndRelatedCaches(eq(username), any(), eq(username));
+    }
+
+    @Test
+    void processServiceInstanceInTransaction_UpdatesTrimmedCarryForwardBalance() {
+        PlanToBucket p2b = new PlanToBucket();
+        p2b.setBucketId("b1");
+        p2b.setCarryForward(true);
+        p2b.setInitialQuota(1000L);
+        p2b.setMaxCarryForward(500L);
+        p2b.setTotalCarryForward(600L);
+        p2b.setCarryForwardValidity(30);
+
+        BucketInstance current = new BucketInstance();
+        current.setId(70L);
+        current.setBucketId("b1");
+        current.setBucketType("DATA");
+        current.setCurrentBalance(300L);
+        current.setExpiration(LocalDateTime.now().plusDays(1));
+
+        BucketInstance existingCarryForward = new BucketInstance();
+        existingCarryForward.setId(77L);
+        existingCarryForward.setBucketId("b1");
+        existingCarryForward.setBucketType(Constants.CARRY_FORWARD_BUCKET);
+        existingCarryForward.setCurrentBalance(400L);
+        existingCarryForward.setExpiration(LocalDateTime.now().plusDays(5));
+
+        when(serviceInstanceRepository.saveAndFlush(any(ServiceInstance.class)))
+                .thenReturn(ServiceInstance.builder().id(501L).build());
+
+        recurrentServiceService.processServiceInstanceInTransaction(
+                serviceInstance, user, plan, List.of(current, existingCarryForward),
+                List.of(p2b), Map.of("b1", bucket), Map.of(10L, qosProfile));
+
+        // New carry-forward of 300 plus the existing 400 exceeds the 600 total, so the existing one drops to 300
+        verify(bucketInstanceRepository).updateCurrentBalance(eq(77L), eq(300L), any(LocalDateTime.class));
+    }
+
+    @Test
+    void processServiceInstanceInTransaction_DbFailureSkipsCacheUpdate() {
+        planToBucket.setTotalCarryForward(1000L);
+        BucketInstance current = new BucketInstance();
+        current.setId(70L);
+        current.setBucketId("b1");
+        current.setBucketType("DATA");
+        current.setCurrentBalance(50L);
+        current.setExpiration(LocalDateTime.now().plusDays(1));
+
+        when(serviceInstanceRepository.saveAndFlush(any(ServiceInstance.class)))
+                .thenReturn(ServiceInstance.builder().id(502L).build());
+        when(bucketInstanceRepository.saveAll(any())).thenThrow(new IllegalStateException("insert failed"));
+
+        List<BucketInstance> bucketInstances = List.of(current);
+        List<PlanToBucket> quotaDetails = List.of(planToBucket);
+        Map<String, Bucket> bucketMap = Map.of("b1", bucket);
+        Map<Long, QOSProfile> qosProfileMap = Map.of(10L, qosProfile);
+        assertThrows(IllegalStateException.class, () ->
+                recurrentServiceService.processServiceInstanceInTransaction(
+                        serviceInstance, user, plan, bucketInstances, quotaDetails, bucketMap, qosProfileMap));
+
+        verify(userCacheService, never()).getUserData(any());
+        verify(userCacheService, never()).updateUserAndRelatedCaches(any(), any(), any());
+    }
+
+    @Test
+    void reactivateExpiredRecurrentServices_FailureRecordingErrorDoesNotAbortRun() {
+        when(serviceInstanceRepository.findByRecurringFlagTrueAndNextCycleStartDateAndExpiryDateAfter(
+                any(), any(), any(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(serviceInstance)));
+        // No user for the service, so a failure is recorded
+        when(userRepository.findByUserNameIn(any())).thenReturn(Collections.emptyList());
+        doThrow(new IllegalStateException("commit failed"))
+                .when(recurrentServiceService)
+                .saveServiceProcessingFailure(any(), any(), any(), any(), any());
+
+        assertDoesNotThrow(() -> recurrentServiceService.reactivateExpiredRecurrentServices());
     }
     @Test
     void calculateValidityDays_Scenarios() {

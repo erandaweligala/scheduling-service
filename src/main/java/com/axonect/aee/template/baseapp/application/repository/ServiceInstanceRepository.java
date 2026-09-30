@@ -52,42 +52,32 @@ public interface ServiceInstanceRepository extends JpaRepository<ServiceInstance
             Pageable pageable);
 
     /**
-     * Page through service instances whose status equals the given value.
-     * Used by the activation scheduler to flip PENDING -> ACTIVE in chunks.
-     */
-    @Query(value = "SELECT /*+ INDEX(s idx_service_status_recurring) FIRST_ROWS(100) */ " +
-            "s.* FROM SERVICE_INSTANCE s WHERE s.STATUS = :status",
-            countQuery = "SELECT COUNT(*) FROM SERVICE_INSTANCE s WHERE s.STATUS = :status",
-            nativeQuery = true)
-    Page<ServiceInstance> findByStatus(@Param("status") String status, Pageable pageable);
-
-    /**
-     * Bulk-update STATUS for the given IDs. Returns the number of rows updated.
-     * UPDATED_AT is refreshed because @UpdateTimestamp is bypassed for bulk JPQL.
+     * Flip up to {@code limit} rows from {@code expectedStatus} to {@code newStatus} in a single
+     * statement. Used by the activation scheduler: no rows are read back, so each chunk costs
+     * exactly one round trip. Returns the number of rows updated; fewer than {@code limit}
+     * means no matching rows remain.
      */
     @Modifying
-    @Query("UPDATE ServiceInstance s SET s.status = :newStatus, s.updatedAt = :updatedAt " +
-            "WHERE s.id IN :ids AND s.status = :expectedStatus")
-    int bulkUpdateStatus(@Param("ids") Collection<Long> ids,
-                         @Param("expectedStatus") String expectedStatus,
-                         @Param("newStatus") String newStatus,
-                         @Param("updatedAt") LocalDateTime updatedAt);
+    @Query(value = "UPDATE /*+ INDEX(s idx_service_status_recurring) */ SERVICE_INSTANCE s " +
+            "SET s.STATUS = :newStatus, s.UPDATED_AT = :updatedAt " +
+            "WHERE s.STATUS = :expectedStatus AND ROWNUM <= :limit",
+            nativeQuery = true)
+    int updateStatusLimited(@Param("expectedStatus") String expectedStatus,
+                            @Param("newStatus") String newStatus,
+                            @Param("updatedAt") LocalDateTime updatedAt,
+                            @Param("limit") int limit);
 
     /**
-     * Page through service instances whose CYCLE_END_DATE OR EXPIRY_DATE falls within the
-     * given inclusive-exclusive day window. Used by the cleanup scheduler.
+     * IDs of service instances whose CYCLE_END_DATE OR EXPIRY_DATE falls within the given
+     * inclusive-exclusive day window. Used by the cleanup scheduler; returning a List (not a
+     * Page) avoids the COUNT query, and only the IDs are fetched.
      */
-    @Query(value = "SELECT /*+ FIRST_ROWS(100) */ s.* FROM SERVICE_INSTANCE s " +
-            "WHERE (s.CYCLE_END_DATE >= :dayStart AND s.CYCLE_END_DATE < :dayEnd) " +
-            "   OR (s.EXPIRY_DATE   >= :dayStart AND s.EXPIRY_DATE   < :dayEnd)",
-            countQuery = "SELECT COUNT(*) FROM SERVICE_INSTANCE s " +
-            "WHERE (s.CYCLE_END_DATE >= :dayStart AND s.CYCLE_END_DATE < :dayEnd) " +
-            "   OR (s.EXPIRY_DATE   >= :dayStart AND s.EXPIRY_DATE   < :dayEnd)",
-            nativeQuery = true)
-    Page<ServiceInstance> findByCycleEndOrExpiryWithinDay(
-            @Param("dayStart") LocalDateTime dayStart,
-            @Param("dayEnd") LocalDateTime dayEnd,
-            Pageable pageable);
+    @Query("SELECT s.id FROM ServiceInstance s " +
+            "WHERE (s.serviceCycleEndDate >= :dayStart AND s.serviceCycleEndDate < :dayEnd) " +
+            "   OR (s.expiryDate >= :dayStart AND s.expiryDate < :dayEnd)")
+    List<Long> findIdsByCycleEndOrExpiryWithinDay(@Param("dayStart") LocalDateTime dayStart,
+                                                  @Param("dayEnd") LocalDateTime dayEnd,
+                                                  Pageable pageable);
 
     @Modifying
     @Query("DELETE FROM ServiceInstance s WHERE s.id IN :ids")

@@ -8,7 +8,6 @@ import com.axonect.aee.template.baseapp.application.repository.QOSProfileReposit
 import com.axonect.aee.template.baseapp.application.repository.ServiceInstanceRepository;
 import com.axonect.aee.template.baseapp.application.repository.ServiceProcessingFailureRepository;
 import com.axonect.aee.template.baseapp.application.repository.UserRepository;
-import com.axonect.aee.template.baseapp.application.transport.request.entities.DBWriteRequest;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Bucket;
 import com.axonect.aee.template.baseapp.domain.entities.repo.BucketInstance;
 import com.axonect.aee.template.baseapp.domain.entities.repo.Plan;
@@ -38,11 +37,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -54,7 +51,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 @Service
@@ -72,9 +68,6 @@ public class RecurrentServiceService {
     private final BucketInstanceRepository bucketInstanceRepository;
     private final UserCacheService userCacheService;
     private final ServiceProcessingFailureRepository serviceProcessingFailureRepository;
-    private final RecurrentServiceProducer recurrentServiceProducer;
-    private static final DateTimeFormatter FORMATTER =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
     @Autowired
     @Lazy
     private RecurrentServiceService self;
@@ -192,14 +185,14 @@ public class RecurrentServiceService {
         if (user == null) {
             log.warn("User not found for service ID: {}, username: {}",
                     serviceInstance.getId(), serviceInstance.getUsername());
-            self.saveServiceProcessingFailure(serviceInstance, null, serviceInstance.getUsername(),
+            recordFailure(serviceInstance, null, serviceInstance.getUsername(),
                     new IllegalStateException("User not found: " + serviceInstance.getUsername()), batchId);
             return false;
         }
 
         if (plan == null) {
             log.error("Plan not found: {}", serviceInstance.getPlanId());
-            self.saveServiceProcessingFailure(serviceInstance, null, user.getUserName(),
+            recordFailure(serviceInstance, null, user.getUserName(),
                     new IllegalStateException("Plan not found: " + serviceInstance.getPlanId()), batchId);
             return false;
         }
@@ -223,7 +216,21 @@ public class RecurrentServiceService {
             results.incrementFailure();
             log.error("Failed to process service ID: {} for user: {}. Error: {}",
                     serviceInstance.getId(), user.getUserName(), ex.getMessage(), ex);
-            self.saveServiceProcessingFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
+            recordFailure(serviceInstance, plan, user.getUserName(), ex, batchId);
+        }
+    }
+
+    /**
+     * Records a processing failure in its own transaction. A failure to record (e.g. at commit)
+     * is logged and swallowed so that it never aborts the remaining services in the run.
+     */
+    private void recordFailure(ServiceInstance serviceInstance, Plan plan, String username,
+                               Exception exception, String batchId) {
+        try {
+            self.saveServiceProcessingFailure(serviceInstance, plan, username, exception, batchId);
+        } catch (Exception ex) {
+            log.error("Failed to record processing failure for service ID: {}. Error: {}",
+                    serviceInstance.getId(), ex.getMessage(), ex);
         }
     }
 
@@ -271,6 +278,8 @@ public class RecurrentServiceService {
     /**
      * Processes a single service instance in its own transaction.
      * Each service gets an independent transaction that can commit or rollback without affecting others.
+     * Inserts the next cycle's SERVICE_INSTANCE row (status PENDING), its bucket instances and any
+     * carry-forward balance adjustments, then updates the user cache once all SQL has executed.
      *
      * @param serviceInstance The service instance to process
      * @param user The user entity
@@ -280,7 +289,7 @@ public class RecurrentServiceService {
      * @param bucketMap Map of bucket IDs to bucket entities
      * @param qosProfileMap Map of QoS profile IDs to QoS profiles
      */
-
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processServiceInstanceInTransaction(
             ServiceInstance serviceInstance,
             UserEntity user,
@@ -295,20 +304,72 @@ public class RecurrentServiceService {
         // Update cycle management properties
         updateCycleManagementProperties(serviceInstance, plan, user);
 
-        // Collect all DB write requests (bucket inserts/updates) to bundle into one Kafka event
-        List<DBWriteRequest> relatedWrites = new ArrayList<>();
+        // Build the next cycle's bucket instances; existing carry-forward buckets whose balance
+        // must shrink are collected into carryForwardUpdates
+        List<BucketInstance> carryForwardUpdates = new ArrayList<>();
+        List<BucketInstance> newBuckets = provisionQuotaOptimized(serviceInstance, bucketInstanceList,
+                quotaDetails, bucketMap, qosProfileMap, carryForwardUpdates);
 
-        // Provision quotas - bucket write requests are collected into relatedWrites
-        provisionQuotaOptimized(serviceInstance, bucketInstanceList, quotaDetails, bucketMap, qosProfileMap, relatedWrites);
+        ServiceInstance renewedService = persistRenewal(serviceInstance, newBuckets, carryForwardUpdates);
+        log.debug("Inserted service instance ID: {} with {} bucket instances for service ID: {}",
+                renewedService.getId(), newBuckets.size(), serviceInstance.getId());
 
-        // Publish ONE combined reactivateExpiredRecurrentServices event: service instance insert
-        // as the main event with all bucket instance writes as relatedWrites
-        recurrentServiceProducer.publishDBWriteEvent(
-                buildServiceInstanceInsertRequest(serviceInstance, relatedWrites),
-                String.valueOf(serviceInstance.getId()));
-        log.debug("Published reactivateExpiredRecurrentServices event for service ID: {}", serviceInstance.getId());
+        // Every statement has executed by now, so a DB failure rolls back before the cache is touched
+        if (!newBuckets.isEmpty()) {
+            updateUserCacheWithBuckets(serviceInstance.getUsername(), newBuckets, serviceInstance);
+        }
 
         log.debug("Completed processing service instance ID: {} in transaction", serviceInstance.getId());
+    }
+
+    /**
+     * Writes the renewal directly: the next cycle's SERVICE_INSTANCE row, its BUCKET_INSTANCE rows
+     * (linked to the new row) and the CURRENT_BALANCE of adjusted carry-forward buckets.
+     *
+     * @return the inserted service instance
+     */
+    private ServiceInstance persistRenewal(ServiceInstance serviceInstance,
+                                           List<BucketInstance> newBuckets,
+                                           List<BucketInstance> carryForwardUpdates) {
+        // Flush so the parent row exists before its bucket instances are inserted
+        ServiceInstance renewedService = serviceInstanceRepository.saveAndFlush(buildRenewedServiceInstance(serviceInstance));
+
+        for (BucketInstance bucketInstance : newBuckets) {
+            bucketInstance.setServiceId(renewedService.getId());
+        }
+        bucketInstanceRepository.saveAll(newBuckets);
+
+        if (!carryForwardUpdates.isEmpty()) {
+            LocalDateTime updatedAt = LocalDateTime.now();
+            for (BucketInstance bucketInstance : carryForwardUpdates) {
+                bucketInstanceRepository.updateCurrentBalance(
+                        bucketInstance.getId(), bucketInstance.getCurrentBalance(), updatedAt);
+            }
+        }
+        return renewedService;
+    }
+
+    /**
+     * Builds the next cycle's SERVICE_INSTANCE row from the current one, whose cycle dates have
+     * already been advanced. The ID comes from SERVICE_INSTANCE_SEQ and the row starts as PENDING
+     * until the activation scheduler flips it.
+     */
+    private ServiceInstance buildRenewedServiceInstance(ServiceInstance serviceInstance) {
+        return ServiceInstance.builder()
+                .planId(serviceInstance.getPlanId())
+                .planName(serviceInstance.getPlanName())
+                .planType(serviceInstance.getPlanType())
+                .recurringFlag(serviceInstance.getRecurringFlag())
+                .username(serviceInstance.getUsername())
+                .serviceStartDate(serviceInstance.getServiceStartDate())
+                .serviceCycleStartDate(serviceInstance.getServiceCycleStartDate())
+                .serviceCycleEndDate(serviceInstance.getServiceCycleEndDate())
+                .nextCycleStartDate(serviceInstance.getNextCycleStartDate())
+                .expiryDate(serviceInstance.getExpiryDate())
+                .status(Constants.PENDING)
+                .requestId(serviceInstance.getRequestId())
+                .isGroup(serviceInstance.getIsGroup())
+                .build();
     }
 
     private void updateCycleManagementProperties(ServiceInstance serviceInstance, Plan plan, UserEntity user){
@@ -392,9 +453,10 @@ public class RecurrentServiceService {
 
 
 
-    private void provisionQuotaOptimized(ServiceInstance serviceInstance, List<BucketInstance> bucketInstanceList,
-                                         List<PlanToBucket> quotaDetails, Map<String, Bucket> bucketMap,
-                                         Map<Long, QOSProfile> qosProfileMap, List<DBWriteRequest> writeRequests) {
+    private List<BucketInstance> provisionQuotaOptimized(ServiceInstance serviceInstance, List<BucketInstance> bucketInstanceList,
+                                                         List<PlanToBucket> quotaDetails, Map<String, Bucket> bucketMap,
+                                                         Map<Long, QOSProfile> qosProfileMap,
+                                                         List<BucketInstance> carryForwardUpdates) {
         log.debug("Starting optimized quota provisioning for Service Instance ID: {}", serviceInstance.getId());
 
         try {
@@ -413,18 +475,14 @@ public class RecurrentServiceService {
             List<BucketInstance> allNewBuckets = new ArrayList<>();
 
             log.debug("Performing new quota provision for Service Instance ID: {}", serviceInstance.getId());
-            List<BucketInstance> newBuckets = newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap, writeRequests);
+            List<BucketInstance> newBuckets = newQuotaProvisionOptimized(quotaDetails, serviceInstance, bucketMap, qosProfileMap);
             allNewBuckets.addAll(newBuckets);
 
             log.debug("Performing carry forward provision for Service Instance ID: {}", serviceInstance.getId());
-            List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap, writeRequests);
+            List<BucketInstance> carryForwardBuckets = createCarryForwardBucketsOptimized(bucketInstanceList, quotaDetails, serviceInstance, bucketMap, qosProfileMap, carryForwardUpdates);
             allNewBuckets.addAll(carryForwardBuckets);
 
-            // Update user cache once with all newly created bucket instances
-            if (!allNewBuckets.isEmpty()) {
-                updateUserCacheWithBuckets(serviceInstance.getUsername(), allNewBuckets, serviceInstance);
-            }
-
+            return allNewBuckets;
         } catch (AAAException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -435,8 +493,7 @@ public class RecurrentServiceService {
 
 
     private List<BucketInstance> newQuotaProvisionOptimized(List<PlanToBucket> quotaDetails, ServiceInstance serviceInstance,
-                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap,
-                                            List<DBWriteRequest> writeRequests) {
+                                            Map<String, Bucket> bucketMap, Map<Long, QOSProfile> qosProfileMap) {
         log.debug("Starting optimized new quota provision for Service Instance ID: {}, Quota count: {}",
                 serviceInstance.getId(), quotaDetails.size());
 
@@ -448,10 +505,7 @@ public class RecurrentServiceService {
                         Boolean.FALSE, null, bucketMap, qosProfileMap);
                 bucketInstanceList.add(bucketInstance);
             }
-            // Collect bucket instance insert requests to be bundled into a single Kafka event
-            bucketInstanceList.forEach(bucketInstance ->
-                    writeRequests.add(buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername())));
-            log.debug("Collected {} bucket instance insert requests for Service Instance ID: {}",
+            log.debug("Built {} new bucket instances for Service Instance ID: {}",
                     bucketInstanceList.size(), serviceInstance.getId());
 
             return bucketInstanceList;
@@ -684,14 +738,13 @@ public class RecurrentServiceService {
                                                     ServiceInstance serviceInstance,
                                                     Map<String, Bucket> bucketMap,
                                                     Map<Long, QOSProfile> qosProfileMap,
-                                                    List<DBWriteRequest> writeRequests) {
+                                                    List<BucketInstance> updatesToSave) {
         Long serviceId = serviceInstance.getId();
         log.debug("Starting optimized create carry forward buckets for Service Instance ID: {}, Quota count: {}",
                 serviceId, quotaDetails.size());
 
         try {
             List<BucketInstance> newCarryForwardBucketList = new ArrayList<>();
-            List<BucketInstance> updatesToSave = new ArrayList<>();
             LocalDate tomorrow = LocalDate.now(ZoneId.of(Constants.SL_TIME_ZONE)).plusDays(1);
 
             Map<String, List<BucketInstance>> existingCFBucketsByIdMap =
@@ -717,13 +770,8 @@ public class RecurrentServiceService {
                 }
             }
 
-            // Collect carry-forward bucket updates and inserts to be bundled into a single Kafka event
-            updatesToSave.forEach(bucketInstance ->
-                    writeRequests.add(buildBucketInstanceUpdateRequest(bucketInstance, serviceInstance.getUsername())));
-            newCarryForwardBucketList.forEach(bucketInstance ->
-                    writeRequests.add(buildBucketInstanceInsertRequest(bucketInstance, serviceInstance.getUsername())));
-            log.debug("Collected {} carry-forward bucket instance requests for Service Instance ID: {}",
-                    newCarryForwardBucketList.size(), serviceId);
+            log.debug("Built {} carry-forward bucket instances and {} carry-forward adjustments for Service Instance ID: {}",
+                    newCarryForwardBucketList.size(), updatesToSave.size(), serviceId);
 
             return newCarryForwardBucketList;
 
@@ -874,124 +922,14 @@ public class RecurrentServiceService {
                     .additionalInfo(truncateString(additionalInfo, 1000))
                     .build();
 
-            recurrentServiceProducer.publishDBWriteEvent(
-                    buildServiceProcessingFailureInsertRequest(failure),
-                    String.valueOf(serviceInstance.getId()));
-            log.debug("Published failure record event for service ID: {}, username: {}", serviceInstance.getId(), username);
+            serviceProcessingFailureRepository.save(failure);
+            log.debug("Saved failure record for service ID: {}, username: {}", serviceInstance.getId(), username);
 
         } catch (Exception ex) {
             // Log but don't throw - we don't want failure tracking to break the main processing
             log.error("Failed to save processing failure record for service ID: {}. Error: {}",
                     serviceInstance.getId(), ex.getMessage(), ex);
         }
-    }
-
-    private DBWriteRequest buildServiceInstanceInsertRequest(ServiceInstance serviceInstance,
-                                                              List<DBWriteRequest> relatedWrites) {
-        LocalDateTime now = LocalDateTime.now();
-        Map<String, Object> columnValues = new HashMap<>();
-        columnValues.put("ID", generateInternalId());
-        columnValues.put("PLAN_ID", serviceInstance.getPlanId());
-        columnValues.put("PLAN_NAME", serviceInstance.getPlanName());
-        columnValues.put("PLAN_TYPE", serviceInstance.getPlanType());
-        columnValues.put("RECURRING_FLAG", serviceInstance.getRecurringFlag());
-        columnValues.put("USERNAME", serviceInstance.getUsername());
-        columnValues.put("SERVICE_START_DATE", serviceInstance.getServiceStartDate().format(FORMATTER));
-        columnValues.put("CYCLE_START_DATE", serviceInstance.getServiceCycleStartDate().format(FORMATTER));
-        columnValues.put("CYCLE_END_DATE", serviceInstance.getServiceCycleEndDate().format(FORMATTER));
-        columnValues.put("NEXT_CYCLE_START_DATE", serviceInstance.getNextCycleStartDate() != null
-                ? serviceInstance.getNextCycleStartDate().format(FORMATTER) : null);
-        columnValues.put("EXPIRY_DATE", serviceInstance.getExpiryDate().format(FORMATTER));
-        columnValues.put("STATUS", "PENDING");
-        columnValues.put("REQUEST_ID", serviceInstance.getRequestId());
-        columnValues.put("IS_GROUP", serviceInstance.getIsGroup());
-        columnValues.put("CREATED_AT", now.format(FORMATTER));
-        columnValues.put("UPDATED_AT", now.format(FORMATTER));
-
-        return DBWriteRequest.builder()
-                .eventType("INSERT")
-                .timestamp(Instant.now().toString())
-                .userName(serviceInstance.getUsername())
-                .tableName("SERVICE_INSTANCE")
-                .columnValues(columnValues)
-                .relatedWrites(relatedWrites.isEmpty() ? null : relatedWrites)
-                .build();
-    }
-
-    private Long generateInternalId() {
-        long timestampPart = System.currentTimeMillis() % 1_000_000;
-        int random = ThreadLocalRandom.current().nextInt(10_000);
-        return timestampPart * 10_000L + random;
-    }
-
-    private DBWriteRequest buildBucketInstanceInsertRequest(BucketInstance bucketInstance, String username) {
-        Map<String, Object> columnValues = new HashMap<>();
-        columnValues.put("BUCKET_ID", bucketInstance.getBucketId());
-        columnValues.put("SERVICE_ID", bucketInstance.getServiceId());
-        columnValues.put("BUCKET_TYPE", bucketInstance.getBucketType());
-        columnValues.put("RULE", bucketInstance.getRule());
-        columnValues.put("PRIORITY", bucketInstance.getPriority());
-        columnValues.put("INITIAL_BALANCE", bucketInstance.getInitialBalance());
-        columnValues.put("CURRENT_BALANCE", bucketInstance.getCurrentBalance());
-        columnValues.put("USAGE", bucketInstance.getUsage());
-        columnValues.put("CARRY_FORWARD", bucketInstance.getCarryForward());
-        columnValues.put("MAX_CARRY_FORWARD", bucketInstance.getMaxCarryForward());
-        columnValues.put("TOTAL_CARRY_FORWARD", bucketInstance.getTotalCarryForward());
-        columnValues.put("CARRY_FORWARD_VALIDITY", bucketInstance.getCarryForwardValidity());
-        columnValues.put("TIME_WINDOW", bucketInstance.getTimeWindow());
-        columnValues.put("CONSUMPTION_LIMIT", bucketInstance.getConsumptionLimit());
-        columnValues.put("CONSUMPTION_LIMIT_WINDOW", bucketInstance.getConsumptionLimitWindow());
-        columnValues.put("EXPIRATION", bucketInstance.getExpiration().format(FORMATTER));
-        columnValues.put("IS_UNLIMITED", bucketInstance.getIsUnlimited());
-
-        return DBWriteRequest.builder()
-                .eventType("INSERT")
-                .timestamp(Instant.now().toString())
-                .userName(username)
-                .tableName("BUCKET_INSTANCE")
-                .columnValues(columnValues)
-                .build();
-    }
-
-    private DBWriteRequest buildBucketInstanceUpdateRequest(BucketInstance bucketInstance, String username) {
-        Map<String, Object> columnValues = new HashMap<>();
-        columnValues.put("CURRENT_BALANCE", bucketInstance.getCurrentBalance());
-
-        Map<String, Object> whereConditions = new HashMap<>();
-        whereConditions.put("id", bucketInstance.getId());
-
-        return DBWriteRequest.builder()
-                .eventType("UPDATE")
-                .timestamp(Instant.now().toString())
-                .userName(username)
-                .tableName("BUCKET_INSTANCE")
-                .columnValues(columnValues)
-                .whereConditions(whereConditions)
-                .build();
-    }
-
-    private DBWriteRequest buildServiceProcessingFailureInsertRequest(ServiceProcessingFailure failure) {
-        Map<String, Object> columnValues = new HashMap<>();
-        columnValues.put("SERVICE_INSTANCE_ID", failure.getServiceInstanceId());
-        columnValues.put("USERNAME", failure.getUsername());
-        columnValues.put("PLAN_ID", failure.getPlanId());
-        columnValues.put("PLAN_NAME", failure.getPlanName());
-        columnValues.put("ERROR_TYPE", failure.getErrorType());
-        columnValues.put("ERROR_MESSAGE", failure.getErrorMessage());
-        columnValues.put("STACK_TRACE", failure.getStackTrace());
-        columnValues.put("RETRY_COUNT", failure.getRetryCount());
-        columnValues.put("PROCESSING_STATUS", failure.getProcessingStatus());
-        columnValues.put("FAILURE_DATE", LocalDateTime.now());
-        columnValues.put("BATCH_ID", failure.getBatchId());
-        columnValues.put("ADDITIONAL_INFO", failure.getAdditionalInfo());
-
-        return DBWriteRequest.builder()
-                .eventType("INSERT")
-                .timestamp(Instant.now().toString())
-                .userName(failure.getUsername())
-                .tableName("SERVICE_PROCESSING_FAILURE")
-                .columnValues(columnValues)
-                .build();
     }
 
     /**

@@ -140,7 +140,6 @@ expiry-notification:
 
 service-renewal:
   schedule: "0 0 3 * * ?"
-  db-write-topic: accounting-db-dc
 
 # Kafka Configuration for Bucket Expiry Notifications
 spring.kafka:
