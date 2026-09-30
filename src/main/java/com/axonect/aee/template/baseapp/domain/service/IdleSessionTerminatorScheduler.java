@@ -1,12 +1,12 @@
 package com.axonect.aee.template.baseapp.domain.service;
 
 import com.axonect.aee.template.baseapp.application.config.IdleSessionConfig;
+import com.axonect.aee.template.baseapp.application.repository.BucketBalanceRepository;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Balance;
-import com.axonect.aee.template.baseapp.domain.entities.dto.DBWriteRequest;
+import com.axonect.aee.template.baseapp.domain.entities.dto.BucketBalanceUpdate;
 import com.axonect.aee.template.baseapp.domain.entities.dto.Session;
 import com.axonect.aee.template.baseapp.domain.entities.dto.UserSessionData;
 import com.axonect.aee.template.baseapp.domain.entities.dto.cdr.AccountingCdrEvent;
-import com.axonect.aee.template.baseapp.domain.enums.EventType;
 import com.axonect.aee.template.baseapp.domain.util.CdrMappingUtil;
 import com.axonect.aee.template.baseapp.domain.util.MappingUtil;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -41,6 +42,7 @@ public class IdleSessionTerminatorScheduler {
     private final SessionExpiryIndex sessionExpiryIndex;
     private final IdleSessionConfig config;
     private final AccountProducer accountProducer;
+    private final BucketBalanceRepository bucketBalanceRepository;
     private final MonitoringService monitoringService;
 
     /** Guards against concurrent scheduler executions (equivalent to ConcurrentExecution.SKIP). */
@@ -171,6 +173,8 @@ public class IdleSessionTerminatorScheduler {
                                              AtomicInteger totalSessionsTerminated) {
 
         List<String> membersToRemove = new ArrayList<>();
+        // Final balances of the terminated sessions, keyed (and so ordered) by bucket instance ID
+        Map<Long, BucketBalanceUpdate> balanceUpdates = new TreeMap<>();
 
         for (Map.Entry<String, List<SessionExpiryIndex.SessionExpiryEntry>> entry : sessionsByUser.entrySet()) {
             String userId = entry.getKey();
@@ -188,11 +192,13 @@ public class IdleSessionTerminatorScheduler {
             }
 
             try {
-                processUserExpiredSessions(userData, expiredSessions, totalSessionsTerminated);
+                processUserExpiredSessions(userData, expiredSessions, totalSessionsTerminated, balanceUpdates);
             } catch (Exception e) {
                 log.error("[{}] Error processing sessions for userId: {}", M_PROCESS, userId, e);
             }
         }
+
+        persistBalanceUpdates(balanceUpdates);
 
         // Remove processed entries from index in batch
         long removed = sessionExpiryIndex.removeSessions(membersToRemove);
@@ -201,13 +207,14 @@ public class IdleSessionTerminatorScheduler {
 
     /**
      * Process expired sessions for a single user.
-     * This method removes expired sessions from cache and triggers DB write operations
-     * to persist balance updates for terminated sessions.
+     * This method removes expired sessions from cache and collects the balance updates
+     * to persist for terminated sessions into {@code balanceUpdates}.
      * Also checks for absolute session timeout based on sessionInitiatedTime and sessionTimeOut.
      */
     private void processUserExpiredSessions(UserSessionData userData,
                                             List<SessionExpiryIndex.SessionExpiryEntry> expiredSessionEntries,
-                                            AtomicInteger totalSessionsTerminated) {
+                                            AtomicInteger totalSessionsTerminated,
+                                            Map<Long, BucketBalanceUpdate> balanceUpdates) {
         if (userData.getSessions() == null || userData.getSessions().isEmpty()) {
             return;
         }
@@ -248,13 +255,13 @@ public class IdleSessionTerminatorScheduler {
 
         totalSessionsTerminated.addAndGet(sessionsToTerminate.size());
 
-        // Trigger DB write operations for terminated sessions to persist balance state
-        triggerDBRequestInitiate(sessionsToTerminate, userData);
+        // Collect balance state of terminated sessions; persisted once for the whole batch
+        collectBalanceUpdates(sessionsToTerminate, userData, balanceUpdates);
 
         // Generate a CDR (Call Detail Record) and publish a Kafka event for each terminated session
         generateIdleTimeoutCdrEvents(sessionsToTerminate, userData);
 
-        // Update cache after DB write is initiated
+        // Update cache with the remaining sessions
         try {
             userCacheService.updateUserAndRelatedCaches(userName, userData, userName);
         } catch (Exception e) {
@@ -279,40 +286,38 @@ public class IdleSessionTerminatorScheduler {
     }
 
     /**
-     * Create a DB write operation for a session if the balance needs to be persisted.
+     * Queue the balance of a terminated session for persistence if it needs to be persisted.
      *
-     * @param session The session being terminated
-     * @param balance The matching balance
+     * @param session        The session being terminated
+     * @param balance        The matching balance
+     * @param balanceUpdates Balance updates collected for the current batch
      */
-    private void createDBWriteOperationIfNeeded(Session session, Balance balance) {
+    private void collectBalanceUpdateIfNeeded(Session session, Balance balance,
+                                              Map<Long, BucketBalanceUpdate> balanceUpdates) {
         if (balance.getQuota() < session.getAvailableBalance()) {
             return;
         }
 
-        DBWriteRequest dbWriteRequest = MappingUtil.createDBWriteRequest(
-                balance,
-                balance.getBucketUsername(),
-                session.getSessionId(),
-                EventType.UPDATE_EVENT
-        );
-
-        log.debug("[{}] Triggered DB write for terminated session: {}, bucketId: {}",
-                M_PROCESS, session.getSessionId(), balance.getBucketId());
-
         try {
-            accountProducer.produceDBWriteEvent(dbWriteRequest);
+            BucketBalanceUpdate update = MappingUtil.createBucketBalanceUpdate(balance);
+            balanceUpdates.put(update.bucketInstanceId(), update);
+            log.debug("[{}] Queued balance persistence for terminated session: {}, bucketId: {}",
+                    M_PROCESS, session.getSessionId(), balance.getBucketId());
         } catch (Exception e) {
-            log.error("[{}] Failed to produce DB write event for session: {}", M_PROCESS, session.getSessionId(), e);
+            log.error("[{}] Invalid balance for session: {}, bucketId: {}, serviceId: {}",
+                    M_PROCESS, session.getSessionId(), balance.getBucketId(), balance.getServiceId(), e);
         }
     }
 
     /**
-     * Process a single session and create a DB write operation if needed.
+     * Process a single session and queue its balance for persistence if needed.
      *
-     * @param session  The session to process
-     * @param balances List of balances to search for matching bucket
+     * @param session        The session to process
+     * @param balances       List of balances to search for matching bucket
+     * @param balanceUpdates Balance updates collected for the current batch
      */
-    private void processSessionForDBWrite(Session session, List<Balance> balances) {
+    private void processSessionForDBWrite(Session session, List<Balance> balances,
+                                          Map<Long, BucketBalanceUpdate> balanceUpdates) {
         String bucketId = session.getPreviousUsageBucketId();
         if (bucketId == null) {
             return;
@@ -323,17 +328,18 @@ public class IdleSessionTerminatorScheduler {
             return;
         }
 
-        createDBWriteOperationIfNeeded(session, matchingBalance);
+        collectBalanceUpdateIfNeeded(session, matchingBalance, balanceUpdates);
     }
 
     /**
-     * Triggers DB write operations to persist balance state for terminated sessions.
-     * Uses efficient loops to avoid stream overhead and produces events for each session.
+     * Collects the balance state to persist for terminated sessions.
      *
      * @param sessionsToTerminate list of sessions being terminated
      * @param userData            user session data containing balance information
+     * @param balanceUpdates      balance updates collected for the current batch
      */
-    private void triggerDBRequestInitiate(List<Session> sessionsToTerminate, UserSessionData userData) {
+    private void collectBalanceUpdates(List<Session> sessionsToTerminate, UserSessionData userData,
+                                       Map<Long, BucketBalanceUpdate> balanceUpdates) {
         if (sessionsToTerminate == null || sessionsToTerminate.isEmpty()) {
             return;
         }
@@ -344,7 +350,27 @@ public class IdleSessionTerminatorScheduler {
         }
 
         for (Session session : sessionsToTerminate) {
-            processSessionForDBWrite(session, balances);
+            processSessionForDBWrite(session, balances, balanceUpdates);
+        }
+    }
+
+    /**
+     * Persists the collected balances of a batch directly with one JDBC batch update.
+     * A failure is logged and does not stop the termination flow.
+     *
+     * @param balanceUpdates balance updates collected for the current batch
+     */
+    private void persistBalanceUpdates(Map<Long, BucketBalanceUpdate> balanceUpdates) {
+        if (balanceUpdates.isEmpty()) {
+            return;
+        }
+        try {
+            int updated = bucketBalanceRepository.updateBalances(balanceUpdates.values());
+            log.debug("[{}] Persisted balances of {} bucket instances, {} rows updated",
+                    M_PROCESS, balanceUpdates.size(), updated);
+        } catch (Exception e) {
+            log.error("[{}] Failed to persist balances of {} bucket instances",
+                    M_PROCESS, balanceUpdates.size(), e);
         }
     }
 

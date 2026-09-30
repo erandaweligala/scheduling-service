@@ -128,7 +128,6 @@ idle-session:
   timeout-minutes: 20               # Sessions idle longer than this will be terminated
   scheduler-interval-ms: 900000     # Scheduler fire interval in ms (default: 5 minutes)
   batch-size: 100                   # Max sessions to process per batch
-  db-write-topic: accounting-db-dc   # Kafka topic for balance persistence events
   cdr-topic: accounting-cdr-events   # Kafka topic for CDR events on session termination
 
 # Expiry Notification Configuration
@@ -139,7 +138,6 @@ expiry-notification:
 #Service Renewal Configuration
 service-renewal:
   schedule: "0 30 0 * * ?"
-  db-write-topic: accounting-db-dc
 
   
 # Kafka Configuration for Bucket Expiry Notifications
