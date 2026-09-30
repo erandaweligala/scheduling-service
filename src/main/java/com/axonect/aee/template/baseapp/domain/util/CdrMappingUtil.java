@@ -94,7 +94,7 @@ public final class CdrMappingUtil {
 
         return AccountingCdrEvent.builder()
                 .eventId(UUID.randomUUID().toString())
-                .eventType(CdrEventType.ACCOUNTING_STOP.name())
+                .eventType(CdrEventType.IDLE_TIMEOUT_STOP.name())
                 .eventVersion(EVENT_VERSION)
                 .eventTimestamp(now)
                 .source(SOURCE)

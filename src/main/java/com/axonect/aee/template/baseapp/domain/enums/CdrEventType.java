@@ -6,5 +6,5 @@ package com.axonect.aee.template.baseapp.domain.enums;
 public enum CdrEventType {
     ACCOUNTING_START,
     ACCOUNTING_INTERIM,
-    ACCOUNTING_STOP
+    IDLE_TIMEOUT_STOP
 }
